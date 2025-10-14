@@ -1,0 +1,11 @@
+/Users/npl-weng/Desktop/untitled folder/Cal-Library/dotnet/XHale.Core/bin/Release/net9.0/XHale.Core.deps.json
+/Users/npl-weng/Desktop/untitled folder/Cal-Library/dotnet/XHale.Core/bin/Release/net9.0/XHale.Core.dll
+/Users/npl-weng/Desktop/untitled folder/Cal-Library/dotnet/XHale.Core/bin/Release/net9.0/XHale.Core.pdb
+/Users/npl-weng/Desktop/untitled folder/Cal-Library/dotnet/XHale.Core/obj/Release/net9.0/XHale.Core.GeneratedMSBuildEditorConfig.editorconfig
+/Users/npl-weng/Desktop/untitled folder/Cal-Library/dotnet/XHale.Core/obj/Release/net9.0/XHale.Core.AssemblyInfoInputs.cache
+/Users/npl-weng/Desktop/untitled folder/Cal-Library/dotnet/XHale.Core/obj/Release/net9.0/XHale.Core.AssemblyInfo.cs
+/Users/npl-weng/Desktop/untitled folder/Cal-Library/dotnet/XHale.Core/obj/Release/net9.0/XHale.Core.csproj.CoreCompileInputs.cache
+/Users/npl-weng/Desktop/untitled folder/Cal-Library/dotnet/XHale.Core/obj/Release/net9.0/XHale.Core.dll
+/Users/npl-weng/Desktop/untitled folder/Cal-Library/dotnet/XHale.Core/obj/Release/net9.0/refint/XHale.Core.dll
+/Users/npl-weng/Desktop/untitled folder/Cal-Library/dotnet/XHale.Core/obj/Release/net9.0/XHale.Core.pdb
+/Users/npl-weng/Desktop/untitled folder/Cal-Library/dotnet/XHale.Core/obj/Release/net9.0/ref/XHale.Core.dll
