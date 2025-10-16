@@ -25,10 +25,13 @@ jobs:
       - name: Restore
         run: dotnet restore "./dotnet/XHale.Core/XHale.Core.csproj"
 
+      - name: Clean artifacts
+        run: rm -rf ./artifacts && mkdir -p ./artifacts
+
       - name: Pack
         run: dotnet pack "./dotnet/XHale.Core/XHale.Core.csproj" -c Release -o ./artifacts
 
       - name: Publish to GitHub Packages
-        run: dotnet nuget push "./artifacts/*.nupkg" --source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" --api-key "${{ secrets.GITHUB_TOKEN }}"
+        run: dotnet nuget push "./artifacts/*.nupkg" --source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" --api-key "${{ secrets.GITHUB_TOKEN }}" --skip-duplicate
 
 

@@ -1,0 +1,8 @@
+# Build artifacts
+artifacts/
+bin/
+obj/
+
+# macOS
+.DS_Store
+
