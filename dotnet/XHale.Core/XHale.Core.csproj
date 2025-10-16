@@ -5,7 +5,7 @@
     <Nullable>enable</Nullable>
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
     <PackageId>XHale.Core</PackageId>
-    <Version>0.1.0-alpha.1</Version>
+    <Version>0.1.0-alpha.2</Version>
     <Authors>Your Company</Authors>
     <Description>Calibration and battery math facade (stub). Single API for iOS and Android.</Description>
     <PackageReadmeFile>README.md</PackageReadmeFile>

@@ -9,3 +9,4 @@
 /Users/npl-weng/Desktop/untitled folder/Cal-Library/dotnet/XHale.Core/obj/Release/net8.0/refint/XHale.Core.dll
 /Users/npl-weng/Desktop/untitled folder/Cal-Library/dotnet/XHale.Core/obj/Release/net8.0/XHale.Core.pdb
 /Users/npl-weng/Desktop/untitled folder/Cal-Library/dotnet/XHale.Core/obj/Release/net8.0/ref/XHale.Core.dll
+/Users/npl-weng/Desktop/untitled folder/Cal-Library/dotnet/XHale.Core/obj/Release/net8.0/XHale.Core.sourcelink.json

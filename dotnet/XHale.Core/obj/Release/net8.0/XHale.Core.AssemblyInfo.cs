@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyDescriptionAttribute("Calibration and battery math facade (stub). Single API for iOS and Android.")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("0.1.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("0.1.0-alpha.1")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("0.1.0-alpha.2+d7f25eaeeea049924b0bba061416312077079d6d")]
 [assembly: System.Reflection.AssemblyProductAttribute("XHale.Core")]
 [assembly: System.Reflection.AssemblyTitleAttribute("XHale.Core")]
 [assembly: System.Reflection.AssemblyVersionAttribute("0.1.0.0")]

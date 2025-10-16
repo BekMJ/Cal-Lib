@@ -13,7 +13,7 @@
     "/Users/npl-weng/.nuget/packages/": {}
   },
   "project": {
-    "version": "0.1.0-alpha.1",
+    "version": "0.1.0-alpha.2",
     "restore": {
       "projectUniqueName": "/Users/npl-weng/Desktop/untitled folder/Cal-Library/dotnet/XHale.Core/XHale.Core.csproj",
       "projectName": "XHale.Core",

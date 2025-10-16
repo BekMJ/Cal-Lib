@@ -1,0 +1,20 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2012/06/nuspec.xsd">
+  <metadata>
+    <id>XHale.Core</id>
+    <version>0.1.0-alpha.2</version>
+    <authors>Your Company</authors>
+    <readme>README.md</readme>
+    <description>Calibration and battery math facade (stub). Single API for iOS and Android.</description>
+    <repository type="git" url="https://example.invalid" commit="d7f25eaeeea049924b0bba061416312077079d6d" />
+    <dependencies>
+      <group targetFramework="net8.0" />
+      <group targetFramework="net9.0" />
+    </dependencies>
+  </metadata>
+  <files>
+    <file src="/Users/npl-weng/Desktop/untitled folder/Cal-Library/dotnet/XHale.Core/bin/Release/net8.0/XHale.Core.dll" target="lib/net8.0/XHale.Core.dll" />
+    <file src="/Users/npl-weng/Desktop/untitled folder/Cal-Library/dotnet/XHale.Core/bin/Release/net9.0/XHale.Core.dll" target="lib/net9.0/XHale.Core.dll" />
+    <file src="/Users/npl-weng/Desktop/untitled folder/Cal-Library/dotnet/XHale.Core/README.md" target="/README.md" />
+  </files>
+</package>
