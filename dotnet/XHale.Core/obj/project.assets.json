@@ -13,7 +13,7 @@
     "/Users/npl-weng/.nuget/packages/": {}
   },
   "project": {
-    "version": "0.1.0-alpha.2",
+    "version": "0.1.0-alpha.5",
     "restore": {
       "projectUniqueName": "/Users/npl-weng/Desktop/untitled folder/Cal-Library/dotnet/XHale.Core/XHale.Core.csproj",
       "projectName": "XHale.Core",
@@ -30,7 +30,8 @@
         "net9.0"
       ],
       "sources": {
-        "https://api.nuget.org/v3/index.json": {}
+        "https://api.nuget.org/v3/index.json": {},
+        "https://nuget.pkg.github.com/BekMJ/index.json": {}
       },
       "frameworks": {
         "net8.0": {
@@ -52,7 +53,7 @@
         "auditLevel": "low",
         "auditMode": "direct"
       },
-      "SdkAnalysisLevel": "9.0.300"
+      "SdkAnalysisLevel": "10.0.100"
     },
     "frameworks": {
       "net8.0": {
@@ -71,11 +72,11 @@
         "downloadDependencies": [
           {
             "name": "Microsoft.AspNetCore.App.Ref",
-            "version": "[8.0.20, 8.0.20]"
+            "version": "[8.0.22, 8.0.22]"
           },
           {
             "name": "Microsoft.NETCore.App.Ref",
-            "version": "[8.0.20, 8.0.20]"
+            "version": "[8.0.22, 8.0.22]"
           }
         ],
         "frameworkReferences": {
@@ -83,7 +84,7 @@
             "privateAssets": "all"
           }
         },
-        "runtimeIdentifierGraphPath": "/usr/local/share/dotnet/x64/sdk/9.0.305/PortableRuntimeIdentifierGraph.json"
+        "runtimeIdentifierGraphPath": "/usr/local/share/dotnet/sdk/10.0.100/PortableRuntimeIdentifierGraph.json"
       },
       "net9.0": {
         "targetAlias": "net9.0",
@@ -98,12 +99,22 @@
         ],
         "assetTargetFallback": true,
         "warn": true,
+        "downloadDependencies": [
+          {
+            "name": "Microsoft.AspNetCore.App.Ref",
+            "version": "[9.0.11, 9.0.11]"
+          },
+          {
+            "name": "Microsoft.NETCore.App.Ref",
+            "version": "[9.0.11, 9.0.11]"
+          }
+        ],
         "frameworkReferences": {
           "Microsoft.NETCore.App": {
             "privateAssets": "all"
           }
         },
-        "runtimeIdentifierGraphPath": "/usr/local/share/dotnet/x64/sdk/9.0.305/PortableRuntimeIdentifierGraph.json"
+        "runtimeIdentifierGraphPath": "/usr/local/share/dotnet/sdk/10.0.100/PortableRuntimeIdentifierGraph.json"
       }
     }
   }

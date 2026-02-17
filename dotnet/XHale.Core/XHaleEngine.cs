@@ -7,10 +7,47 @@ namespace XHale.Core;
 public sealed class XHaleEngine : IXHaleEngine
 {
     private string? _licenseKey;
+    private string? _deviceSerialPrefix;
 
     private readonly List<Sample> _samples = new(capacity: 1024);
 
     private const int MaxSamples = 4096;
+    // Calibration (current):
+    // 1) Breath start (temp): first temp sample >= initial temp baseline + 0.8°C.
+    // 2) r_base_pre: trimmed mean of pre-breath CO if >=5 samples; else warmup baseline; else first CO sample.
+    // 3) T_base_pre: average of pre-breath temps; else initial temp baseline.
+    // 4) r_peak (human path): max raw CO after breath start (no smoothing).
+    // 5) ΔT = T_peak - T_base_pre.
+    // 6) Decision rule: if ΔT > 2.0°C use breath calibration; else exponential-fit gas calibration.
+    //    Gas fit uses per-device constants for known serial prefixes; otherwise global constants.
+    // 7) ppm = max(0, (ΔR_comp - intercept) / slope) for human breath; ppm = A / G for gas.
+    // 8) Quality gates: ShortDuration (<2s), SmallTemperatureRise (ΔT < 2°C).
+    private const double CalibrationGasFallbackSlopeRawPerPpm = 0.98;
+    private const double CalibrationGasFallbackInterceptRaw = -1.8;
+    private const double BreathCalibrationSlopeRawPerPpm = 3.60;
+    private const double BreathCalibrationInterceptRaw = 0.0;
+    private const double BreathCalibrationTempThresholdC = 2.0;
+    private const double BreathStartTempRiseC = 0.8;
+    private const double TemperatureCompensationRawPerC = 0.80;
+    private const double VoltageCompensationRawPerV = 150.30;
+    private const double WarmupDurationSec = 20.0;
+    private const double FitWindowSec = 20.0;
+    private const double GasGainRawPerPpm = 0.695;
+    private const double GasTauSec = 22.0;
+    private const double BaselineWindowSec = 5.0;
+    private const double StartSlopeThresholdRawPerSec = 0.1;
+    private const double StartMinDeltaRaw = 1.0;
+    private const double TrimFraction = 0.10;
+    private static readonly Dictionary<string, DeviceGasCalibration> DeviceGasCalibrations = new(StringComparer.Ordinal)
+    {
+        ["6C8A4BC7"] = new DeviceGasCalibration(-0.0227256, 0.798849, 34.25, 5.5),
+        ["D1A07CD4"] = new DeviceGasCalibration(-0.0637795, 0.653858, 14.5, 1.4),
+        ["D92EC0CB"] = new DeviceGasCalibration(-0.0401157, 0.724937, 19.5, 4.0),
+        ["F2E4CB88"] = new DeviceGasCalibration(-0.0314408, 0.697511, 19.5, 3.3),
+        ["F685F16F"] = new DeviceGasCalibration(-0.0333294, 0.692745, 24.5, 5.6),
+    };
+    private double? _baselineExplicitCoRaw;
+    private double? _baselineExplicitTempC;
 
     public void Initialize(string licenseKey)
     {
@@ -19,6 +56,11 @@ public sealed class XHaleEngine : IXHaleEngine
             throw new ArgumentException("License key must be non-empty", nameof(licenseKey));
         }
         _licenseKey = licenseKey;
+    }
+
+    public void SetDeviceSerial(string? serial)
+    {
+        _deviceSerialPrefix = NormalizeSerialPrefix(serial);
     }
 
     public void ResetSession()
@@ -41,30 +83,48 @@ public sealed class XHaleEngine : IXHaleEngine
 
     public XHBreathResult AnalyzeBreath()
     {
-        if (_samples.Count == 0)
+        return AnalyzeBreath(deviceSerial: null);
+    }
+
+    public XHBreathResult AnalyzeBreath(string? deviceSerial)
+    {
+        if (_samples.Count < 2)
         {
             return new XHBreathResult(0, 0, true, true);
         }
 
-        double start = _samples[0].TimestampS;
-        double end = _samples[^1].TimestampS;
-        double duration = Math.Max(0, end - start);
+        int n = _samples.Count;
+        double[] co = new double[n];
+        double[] t = new double[n];
+        for (int i = 0; i < n; i++)
+        {
+            co[i] = _samples[i].CoRaw;
+            t[i] = _samples[i].TemperatureC;
+        }
 
-        // Stub estimated PPM: mean of coRaw scaled to a plausible range
-        double meanCoRaw = _samples.Average(s => s.CoRaw);
-        double estimatedPpm = Math.Max(0, meanCoRaw * 1.5);
+        // Estimate sample period as median of deltas (robust to jitter)
+        var deltas = new List<double>(capacity: Math.Max(0, n - 1));
+        for (int i = 1; i < n; i++)
+        {
+            double dt = _samples[i].TimestampS - _samples[i - 1].TimestampS;
+            if (dt > 0) deltas.Add(dt);
+        }
+        double samplePeriodSec = 0.1;
+        if (deltas.Count > 0)
+        {
+            deltas.Sort();
+            samplePeriodSec = deltas[deltas.Count / 2];
+        }
 
-        // Stub thresholds
-        bool shortDuration = duration < 2.0;
-
-        double minTemp = _samples.Min(s => s.TemperatureC);
-        double maxTemp = _samples.Max(s => s.TemperatureC);
-        bool smallTempRise = (maxTemp - minTemp) < 0.5;
-
-        return new XHBreathResult(estimatedPpm, duration, shortDuration, smallTempRise);
+        return AnalyzeBreath(co, t, samplePeriodSec, deviceSerial);
     }
 
     public XHBreathResult AnalyzeBreath(double[] coRaw, double[] temperatureC, double samplePeriodSec)
+    {
+        return AnalyzeBreath(coRaw, temperatureC, samplePeriodSec, deviceSerial: null);
+    }
+
+    public XHBreathResult AnalyzeBreath(double[] coRaw, double[] temperatureC, double samplePeriodSec, string? deviceSerial)
     {
         if (coRaw == null || temperatureC == null) throw new ArgumentNullException("Input arrays cannot be null");
         if (coRaw.Length == 0 || temperatureC.Length == 0) return new XHBreathResult(0, 0, true, true);
@@ -73,66 +133,99 @@ public sealed class XHaleEngine : IXHaleEngine
 
         int n = coRaw.Length;
 
-        // Baseline: mean of first 10% (min 3, max 50) samples
-        int baselineCount = Math.Clamp((int)Math.Round(n * 0.1), 3, Math.Min(50, n));
-        double baselineCo = 0;
-        double baselineT = 0;
-        for (int i = 0; i < baselineCount; i++)
-        {
-            baselineCo += coRaw[i];
-            baselineT += temperatureC[i];
-        }
-        baselineCo /= baselineCount;
-        baselineT /= baselineCount;
+        int warmupSampleCount = ComputeSampleCountForSeconds(WarmupDurationSec, samplePeriodSec, n);
+        double warmupCoBaseline = Mean(coRaw, 0, warmupSampleCount);
+        double warmupTempBaseline = Mean(temperatureC, 0, warmupSampleCount);
 
-        // Simple smoothing with window 5
-        int window = Math.Clamp((int)Math.Round(0.5 / samplePeriodSec), 3, 11); // ~0.5s
-        double[] smoothed = new double[n];
-        int half = window / 2;
-        for (int i = 0; i < n; i++)
+        int breathStartIdx = FindBreathStartIndex(temperatureC, warmupTempBaseline);
+        double tBasePre = breathStartIdx > 0
+            ? Mean(temperatureC, 0, breathStartIdx)
+            : warmupTempBaseline;
+
+        double rBasePre;
+        if (breathStartIdx >= 5)
         {
-            int start = Math.Max(0, i - half);
-            int end = Math.Min(n - 1, i + half);
-            double sum = 0;
-            int count = 0;
-            for (int j = start; j <= end; j++) { sum += coRaw[j]; count++; }
-            smoothed[i] = sum / count;
+            rBasePre = TrimmedMean(coRaw, 0, breathStartIdx);
+        }
+        else if (warmupSampleCount > 0)
+        {
+            rBasePre = warmupCoBaseline;
+        }
+        else
+        {
+            rBasePre = coRaw[0];
         }
 
-        // Peak search within first 6s after baseline window
-        int searchStart = baselineCount;
-        int searchEnd = Math.Min(n - 1, searchStart + (int)Math.Round(6.0 / samplePeriodSec));
-        if (searchEnd <= searchStart) searchEnd = n - 1;
-        int peakIdx = searchStart;
-        double peakVal = smoothed[peakIdx];
-        for (int i = searchStart + 1; i <= searchEnd; i++)
+        int peakIdx = breathStartIdx;
+        double peakVal = coRaw[peakIdx];
+        for (int i = breathStartIdx + 1; i < n; i++)
         {
-            if (smoothed[i] > peakVal)
+            if (coRaw[i] > peakVal)
             {
-                peakVal = smoothed[i];
+                peakVal = coRaw[i];
                 peakIdx = i;
             }
         }
 
-        double duration = Math.Max(0, (peakIdx - searchStart) * samplePeriodSec);
-        double meanCoRaw = 0;
-        for (int i = 0; i < n; i++) meanCoRaw += coRaw[i];
-        meanCoRaw /= n;
-        double estimatedPpm = Math.Max(0, meanCoRaw * 1.5);
+        double duration = Math.Max(0, (peakIdx - breathStartIdx) * samplePeriodSec);
+        double rPeak = peakVal;
+        double tPeak = temperatureC[peakIdx];
+        double deltaT = tPeak - tBasePre;
+
+        bool useBreathCalibration = deltaT > BreathCalibrationTempThresholdC;
+        double estimatedPpm;
+        if (useBreathCalibration)
+        {
+            double deltaV = 0.0;
+            double deltaRComp = (rPeak - rBasePre)
+                - (TemperatureCompensationRawPerC * deltaT)
+                - (VoltageCompensationRawPerV * deltaV);
+            estimatedPpm = Math.Max(0, (deltaRComp - BreathCalibrationInterceptRaw) / BreathCalibrationSlopeRawPerPpm);
+        }
+        else
+        {
+            double gasBaseline = ComputeGasBaseline(coRaw, warmupSampleCount, samplePeriodSec);
+            int gasStartIdx = FindGasStartIndex(coRaw, gasBaseline, warmupSampleCount, samplePeriodSec);
+            double fitDuration = ComputeFitDuration(gasStartIdx, n, samplePeriodSec);
+            duration = fitDuration;
+            var calibration = GetGasCalibrationForDevice(deviceSerial);
+            if (TryFitGasPpm(coRaw, gasBaseline, gasStartIdx, samplePeriodSec, calibration, out double gasPpm))
+            {
+                estimatedPpm = Math.Max(0, gasPpm);
+            }
+            else if (TryFitGasPpm(
+                coRaw,
+                gasBaseline,
+                gasStartIdx,
+                samplePeriodSec,
+                DeviceGasCalibration.Global(GasGainRawPerPpm, GasTauSec),
+                out double fallbackGasPpm))
+            {
+                estimatedPpm = Math.Max(0, fallbackGasPpm);
+            }
+            else
+            {
+                // Preserve older fallback behavior when fit is not computable.
+                double deltaV = 0.0;
+                double deltaRComp = (rPeak - rBasePre)
+                    - (TemperatureCompensationRawPerC * deltaT)
+                    - (VoltageCompensationRawPerV * deltaV);
+                estimatedPpm = Math.Max(0, (deltaRComp - CalibrationGasFallbackInterceptRaw) / CalibrationGasFallbackSlopeRawPerPpm);
+            }
+        }
 
         bool shortDuration = duration < 2.0;
-        double minTemp = double.PositiveInfinity, maxTemp = double.NegativeInfinity;
-        for (int i = 0; i < n; i++)
-        {
-            if (temperatureC[i] < minTemp) minTemp = temperatureC[i];
-            if (temperatureC[i] > maxTemp) maxTemp = temperatureC[i];
-        }
-        bool smallTempRise = (maxTemp - minTemp) < 0.5;
+        bool smallTempRise = deltaT < BreathCalibrationTempThresholdC;
 
         return new XHBreathResult(estimatedPpm, duration, shortDuration, smallTempRise);
     }
 
     public XHBreathResult AnalyzeBreath(byte[][] coRawBigEndian, double[] temperatureC, double samplePeriodSec)
+    {
+        return AnalyzeBreath(coRawBigEndian, temperatureC, samplePeriodSec, deviceSerial: null);
+    }
+
+    public XHBreathResult AnalyzeBreath(byte[][] coRawBigEndian, double[] temperatureC, double samplePeriodSec, string? deviceSerial)
     {
         if (coRawBigEndian == null || temperatureC == null) throw new ArgumentNullException("Input arrays cannot be null");
         if (coRawBigEndian.Length == 0 || temperatureC.Length == 0) return new XHBreathResult(0, 0, true, true);
@@ -153,7 +246,345 @@ public sealed class XHaleEngine : IXHaleEngine
             coRaw[i] = value;
         }
 
-        return AnalyzeBreath(coRaw, temperatureC, samplePeriodSec);
+        return AnalyzeBreath(coRaw, temperatureC, samplePeriodSec, deviceSerial);
+    }
+
+    public double DecodeTemperatureC(byte[] temperatureBytes)
+    {
+        if (temperatureBytes == null) throw new ArgumentNullException(nameof(temperatureBytes));
+        if (temperatureBytes.Length == 2)
+        {
+            // Default: GATT 0x2A6E little-endian int16 in centi-°C
+            short rawS16 = DecodeInt16FromBytes(temperatureBytes, bigEndian: false);
+            return 0.0 + 0.01 * rawS16;
+        }
+        if (temperatureBytes.Length == 4)
+        {
+            // Default: treat as big-endian uint32 with scale 1.0
+            uint raw = DecodeUInt32FromBytes(temperatureBytes, bigEndian: true);
+            return 0.0 + 1.0 * raw;
+        }
+        throw new ArgumentException("Temperature bytes must be exactly 2 or 4 bytes", nameof(temperatureBytes));
+    }
+
+    public double DecodeTemperatureC(byte[] temperatureBytes, bool bigEndian, double scale, double offset)
+    {
+        if (temperatureBytes == null) throw new ArgumentNullException(nameof(temperatureBytes));
+        if (temperatureBytes.Length == 2)
+        {
+            short rawS16 = DecodeInt16FromBytes(temperatureBytes, bigEndian);
+            return offset + scale * rawS16;
+        }
+        if (temperatureBytes.Length == 4)
+        {
+            uint raw = DecodeUInt32FromBytes(temperatureBytes, bigEndian);
+            return offset + scale * raw;
+        }
+        throw new ArgumentException("Temperature bytes must be exactly 2 or 4 bytes", nameof(temperatureBytes));
+    }
+
+    public void SetBaseline(double coRaw, double tempC)
+    {
+        _baselineExplicitCoRaw = coRaw;
+        _baselineExplicitTempC = tempC;
+    }
+
+    public void SetBaselineFromBytes(byte[] coBytes, byte[] temperatureBytes)
+    {
+        SetBaselineFromBytes(coBytes, temperatureBytes, bigEndian: true);
+    }
+
+    public void SetBaselineFromBytes(byte[] coBytes, byte[] temperatureBytes, bool bigEndian)
+    {
+        if (coBytes == null) throw new ArgumentNullException(nameof(coBytes));
+        if (temperatureBytes == null) throw new ArgumentNullException(nameof(temperatureBytes));
+
+        uint coRaw = DecodeCoRawFromBytes(coBytes, bigEndian);
+        // Temperature: if 2 bytes, assume GATT 0x2A6E (little-endian centi-°C); if 4 bytes, default big-endian
+        double tempC = DecodeTemperatureC(temperatureBytes);
+        SetBaseline(coRaw, tempC);
+    }
+
+    public void SetBaselineFromBytes(byte[] coBytes, double averageTempC)
+    {
+        SetBaselineFromBytes(coBytes, averageTempC, bigEndian: true);
+    }
+
+    public void SetBaselineFromBytes(byte[] coBytes, double averageTempC, bool bigEndian)
+    {
+        if (coBytes == null) throw new ArgumentNullException(nameof(coBytes));
+        uint coRaw = DecodeCoRawFromBytes(coBytes, bigEndian);
+        SetBaseline(coRaw, averageTempC);
+    }
+
+    public void ClearBaseline()
+    {
+        _baselineExplicitCoRaw = null;
+        _baselineExplicitTempC = null;
+    }
+
+    public double DecodeCoPpmFromBytes(byte[] coBytes, byte[] temperatureBytes)
+    {
+        return DecodeCoPpmFromBytes(coBytes, temperatureBytes, bigEndian: true);
+    }
+
+    public double DecodeCoPpmFromBytes(byte[] coBytes, byte[] temperatureBytes, bool bigEndian)
+    {
+        if (_baselineExplicitCoRaw == null || _baselineExplicitTempC == null)
+        {
+            throw new InvalidOperationException("Baseline not set. Call SetBaseline(...) before decoding ppm.");
+        }
+        if (coBytes == null) throw new ArgumentNullException(nameof(coBytes));
+        if (temperatureBytes == null) throw new ArgumentNullException(nameof(temperatureBytes));
+
+        uint coRaw = DecodeCoRawFromBytes(coBytes, bigEndian);
+        double tempC = DecodeTemperatureC(temperatureBytes);
+
+        double deltaR = coRaw - _baselineExplicitCoRaw.Value;
+        double deltaT = tempC - _baselineExplicitTempC.Value;
+        double compensatedDeltaR = deltaR - (TemperatureCompensationRawPerC * deltaT);
+
+        bool useBreathCalibration = deltaT > BreathCalibrationTempThresholdC;
+        double slope = useBreathCalibration ? BreathCalibrationSlopeRawPerPpm : CalibrationGasFallbackSlopeRawPerPpm;
+        double intercept = useBreathCalibration ? BreathCalibrationInterceptRaw : CalibrationGasFallbackInterceptRaw;
+        return Math.Max(0, (compensatedDeltaR - intercept) / slope);
+    }
+
+    public double AverageTemperatureCFromBytes(IEnumerable<byte[]> temperatureSamplesBytes)
+    {
+        return AverageTemperatureCFromBytes(temperatureSamplesBytes, bigEndian: true);
+    }
+
+    public double AverageTemperatureCFromBytes(IEnumerable<byte[]> temperatureSamplesBytes, bool bigEndian)
+    {
+        if (temperatureSamplesBytes == null) throw new ArgumentNullException(nameof(temperatureSamplesBytes));
+        double sum = 0;
+        int count = 0;
+        foreach (var sample in temperatureSamplesBytes)
+        {
+            if (sample == null || (sample.Length != 2 && sample.Length != 4))
+            {
+                throw new ArgumentException("Each temperature sample must be exactly 2 or 4 bytes");
+            }
+            if (sample.Length == 2)
+            {
+                // Default to 0x2A6E little-endian centi-°C
+                sum += DecodeTemperatureC(sample);
+            }
+            else
+            {
+                sum += DecodeTemperatureC(sample, bigEndian, scale: 1.0, offset: 0.0);
+            }
+            count++;
+        }
+        if (count == 0) throw new ArgumentException("No temperature samples provided");
+        return sum / count;
+    }
+
+    private static uint DecodeUInt32FromBytes(byte[] bytes, bool bigEndian)
+    {
+        uint b0 = bytes[0];
+        uint b1 = bytes[1];
+        uint b2 = bytes[2];
+        uint b3 = bytes[3];
+        return bigEndian
+            ? ((b0 << 24) | (b1 << 16) | (b2 << 8) | b3)
+            : ((b3 << 24) | (b2 << 16) | (b1 << 8) | b0);
+    }
+
+    private static short DecodeInt16FromBytes(byte[] bytes, bool bigEndian)
+    {
+        if (bytes.Length != 2) throw new ArgumentException("Requires 2 bytes", nameof(bytes));
+        int value = bigEndian ? ((bytes[0] << 8) | bytes[1]) : ((bytes[1] << 8) | bytes[0]);
+        return unchecked((short)value);
+    }
+    // CO raw: accept 2-byte (ushort) or 4-byte (uint) payloads
+    private static uint DecodeCoRawFromBytes(byte[] bytes, bool bigEndian)
+    {
+        if (bytes.Length == 2)
+        {
+            return bigEndian ? (uint)((bytes[0] << 8) | bytes[1]) : (uint)((bytes[1] << 8) | bytes[0]);
+        }
+        if (bytes.Length == 4)
+        {
+            return DecodeUInt32FromBytes(bytes, bigEndian);
+        }
+        throw new ArgumentException("CO bytes must be exactly 2 or 4 bytes", nameof(bytes));
+    }
+
+    private static int ComputeSampleCountForSeconds(double seconds, double samplePeriodSec, int maxCount)
+    {
+        int count = (int)Math.Round(seconds / samplePeriodSec);
+        count = Math.Max(1, count);
+        return Math.Min(count, maxCount);
+    }
+
+    private static double Mean(double[] values, int start, int count)
+    {
+        double sum = 0;
+        for (int i = 0; i < count; i++)
+        {
+            sum += values[start + i];
+        }
+        return sum / count;
+    }
+
+    private static double TrimmedMean(double[] values, int start, int count)
+    {
+        double[] tmp = new double[count];
+        Array.Copy(values, start, tmp, 0, count);
+        Array.Sort(tmp);
+
+        int trim = (int)Math.Round(count * TrimFraction);
+        trim = Math.Max(1, trim);
+        trim = Math.Min(trim, (count - 1) / 2);
+
+        double sum = 0;
+        int used = 0;
+        for (int i = trim; i < count - trim; i++)
+        {
+            sum += tmp[i];
+            used++;
+        }
+        return sum / used;
+    }
+
+    private static int FindBreathStartIndex(double[] temperatureC, double baselineTemp)
+    {
+        for (int i = 0; i < temperatureC.Length; i++)
+        {
+            if (temperatureC[i] >= baselineTemp + BreathStartTempRiseC)
+            {
+                return i;
+            }
+        }
+        return 0;
+    }
+
+    private static double ComputeGasBaseline(double[] coRaw, int warmupSampleCount, double samplePeriodSec)
+    {
+        int baselineWindowCount = ComputeSampleCountForSeconds(BaselineWindowSec, samplePeriodSec, warmupSampleCount);
+        int startIdx = Math.Max(0, warmupSampleCount - baselineWindowCount);
+        int count = Math.Max(0, warmupSampleCount - startIdx);
+        return count > 0 ? Mean(coRaw, startIdx, count) : coRaw[0];
+    }
+
+    private static int FindGasStartIndex(double[] coRaw, double baseline, int warmupSampleCount, double samplePeriodSec)
+    {
+        int n = coRaw.Length;
+        int searchStart = Math.Min(warmupSampleCount, n - 1);
+        if (searchStart >= n - 1) return searchStart;
+
+        double[] delta = new double[n];
+        double[] smoothed = new double[n];
+        for (int i = 0; i < n; i++)
+        {
+            delta[i] = coRaw[i] - baseline;
+        }
+        for (int i = 0; i < n; i++)
+        {
+            int s = Math.Max(0, i - 1);
+            int e = Math.Min(n - 1, i + 1);
+            double sum = 0;
+            int count = 0;
+            for (int j = s; j <= e; j++) { sum += delta[j]; count++; }
+            smoothed[i] = sum / count;
+        }
+
+        for (int i = searchStart + 1; i < n; i++)
+        {
+            double slope = (smoothed[i] - smoothed[i - 1]) / samplePeriodSec;
+            if (slope >= StartSlopeThresholdRawPerSec && smoothed[i] >= StartMinDeltaRaw)
+            {
+                return i;
+            }
+        }
+        return searchStart;
+    }
+
+    private static bool TryFitGasPpm(
+        double[] coRaw,
+        double baseline,
+        int startIdx,
+        double samplePeriodSec,
+        DeviceGasCalibration calibration,
+        out double ppm)
+    {
+        ppm = 0;
+        int n = coRaw.Length;
+        int maxCount = n - startIdx;
+        if (maxCount <= 0) return false;
+
+        int fitCount = ComputeSampleCountForSeconds(FitWindowSec, samplePeriodSec, maxCount);
+        double sumYF = 0;
+        double sumF2 = 0;
+        for (int i = 0; i < fitCount; i++)
+        {
+            double u = i * samplePeriodSec;
+            double shiftedU = Math.Max(0, u - calibration.DeadTimeSec);
+            double f = 1.0 - Math.Exp(-shiftedU / calibration.TauSec);
+            double y = (coRaw[startIdx + i] - baseline) - (calibration.DriftRawPerSec * u);
+            sumYF += y * f;
+            sumF2 += f * f;
+        }
+        if (sumF2 <= 0) return false;
+
+        double a = sumYF / sumF2;
+        if (double.IsNaN(a) || double.IsInfinity(a)) return false;
+
+        ppm = a / calibration.GainRawPerPpm;
+        return !double.IsNaN(ppm) && !double.IsInfinity(ppm);
+    }
+
+    private static double ComputeFitDuration(int startIdx, int n, double samplePeriodSec)
+    {
+        int maxCount = Math.Max(1, n - startIdx);
+        int fitCount = ComputeSampleCountForSeconds(FitWindowSec, samplePeriodSec, maxCount);
+        return Math.Max(0, (fitCount - 1) * samplePeriodSec);
+    }
+
+    private DeviceGasCalibration GetGasCalibrationForDevice(string? deviceSerial)
+    {
+        string? serialPrefix = NormalizeSerialPrefix(deviceSerial) ?? _deviceSerialPrefix;
+        if (serialPrefix != null && DeviceGasCalibrations.TryGetValue(serialPrefix, out var calibration))
+        {
+            return calibration;
+        }
+        return DeviceGasCalibration.Global(GasGainRawPerPpm, GasTauSec);
+    }
+
+    private static string? NormalizeSerialPrefix(string? serial)
+    {
+        if (string.IsNullOrWhiteSpace(serial))
+        {
+            return null;
+        }
+
+        Span<char> buf = stackalloc char[8];
+        int len = 0;
+        for (int i = 0; i < serial.Length && len < 8; i++)
+        {
+            char c = serial[i];
+            if (char.IsLetterOrDigit(c))
+            {
+                buf[len++] = char.ToUpperInvariant(c);
+            }
+        }
+
+        return len == 8 ? new string(buf) : null;
+    }
+
+    private readonly record struct DeviceGasCalibration(
+        double DriftRawPerSec,
+        double GainRawPerPpm,
+        double TauSec,
+        double DeadTimeSec)
+    {
+        public static DeviceGasCalibration Global(double gainRawPerPpm, double tauSec) => new(
+            DriftRawPerSec: 0.0,
+            GainRawPerPpm: gainRawPerPpm,
+            TauSec: tauSec,
+            DeadTimeSec: 0.0);
     }
 
     private readonly record struct Sample(double CoRaw, double TemperatureC, double HumidityPct, double TimestampS);

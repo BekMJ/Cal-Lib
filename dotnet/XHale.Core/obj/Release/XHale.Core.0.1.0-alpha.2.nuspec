@@ -6,7 +6,7 @@
     <authors>Your Company</authors>
     <readme>README.md</readme>
     <description>Calibration and battery math facade (stub). Single API for iOS and Android.</description>
-    <repository type="git" url="https://example.invalid" commit="d7f25eaeeea049924b0bba061416312077079d6d" />
+    <repository type="git" url="https://example.invalid" commit="3ddde162066d8e353f90bea7cd0284e13c080cef" />
     <dependencies>
       <group targetFramework="net8.0" />
       <group targetFramework="net9.0" />
