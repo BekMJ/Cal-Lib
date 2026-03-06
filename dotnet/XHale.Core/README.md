@@ -89,28 +89,43 @@ Human breath path (ΔT > 2 °C):
 4. Peak CO: r_peak = max raw CO after breath start (no smoothing).
 5. Compensated delta:
    - ΔT = T_peak − T_base_pre
-   - deltaRComp = (r_peak − r_base_pre) − (0.80 raw/°C) × ΔT − (150.30 raw/V) × ΔV
+   - deltaRComp = (r_peak − r_base_pre) − (17.30 raw/°C) × ΔT − (150.30 raw/V) × ΔV
    - Voltage compensation is fixed at 0.0 in this managed stub (no ΔV input).
 6. ppm conversion: ppm = max(0, (deltaRComp − 0.0) / 3.6).
 
 Calibration‑gas path (ΔT ≤ 2 °C):
-4. Warmup: 20 s.
-5. Baseline: mean CO over last 5 s of warmup (t ∈ 15..20). If not enough points, use first CO sample.
-6. Detect t_start (CO‑based):
-   - ΔCO = CO − baseline; smooth with 3‑sample moving average.
-   - Find first index after warmup where slope ≥ 0.1 raw/s and ΔCO ≥ 1.0 raw.
-   - If not found, t_start = 20 s.
-7. Exponential fit over 20 s window starting at t_start:
+4. Baseline anchor: first 2 CO samples define a baseline line with device drift.
+5. Detect t_start (CO‑based from t=0):
+   - ΔCO(t) = CO(t) − [b0 + drift × (t − t0)].
+   - Smooth with 3‑sample moving average.
+   - Find first index where slope ≥ 0.1 raw/s and ΔCO ≥ 1.0 raw.
+   - If not found, t_start = 0 s.
+6. Exponential fit over 20 s window starting at t_start:
    - For known device serial prefixes (first 8 alphanumeric chars, uppercased):
      - `6C8A4BC7`: drift −0.0227256 raw/s, G 0.798849, τ 34.25 s, dead 5.5 s
      - `D1A07CD4`: drift −0.0637795 raw/s, G 0.653858, τ 14.5 s, dead 1.4 s
      - `D92EC0CB`: drift −0.0401157 raw/s, G 0.724937, τ 19.5 s, dead 4.0 s
      - `F2E4CB88`: drift −0.0314408 raw/s, G 0.697511, τ 19.5 s, dead 3.3 s
      - `F685F16F`: drift −0.0333294 raw/s, G 0.692745, τ 24.5 s, dead 5.6 s
+     - `36F14E25`: drift −2.0899541894 raw/s, G 74.8098248089, τ 22.0 s, dead 3.0 s
+     - `4F2F6B63`: drift −2.1033249594 raw/s, G 39.7056459295, τ 22.0 s, dead 3.0 s
+     - `9E9F6459`: drift −1.7805704153 raw/s, G 59.1600433632, τ 22.0 s, dead 3.0 s
+     - `B73545B1`: drift −1.9470696025 raw/s, G 80.7635699786, τ 22.0 s, dead 3.0 s
+     - `7FF4CB9D`: drift −2.9285963891 raw/s, G 68.3399918156, τ 22.0 s, dead 3.0 s
+     - `E0AED989`: drift −3.1222597554 raw/s, G 61.9352763248, τ 22.0 s, dead 3.0 s
+     - `E5ACF73C`: drift −3.4828421666 raw/s, G 79.8793835328, τ 22.0 s, dead 3.0 s
+     - `F7CF3358`: drift −1.7034362260 raw/s, G 55.5255567505, τ 22.0 s, dead 3.0 s
    - For other serials (or unset serial): global constants are used (drift 0, G 0.695, τ 22 s, dead 0 s).
    - Model: y(u) ≈ A(1 − e^(−max(0, u−dead)/τ)), with y drift-adjusted by `− drift*u`.
    - A = Σ y(u) f(u) / Σ f(u)^2, f(u) = 1 − e^(−max(0, u−dead)/τ)
-8. ppm conversion: ppm = A / G
+7. ppm conversion: ppm = A / G
+8. Gas output quantization:
+   - `<2.5 → 0`
+   - `2.5..<7.5 → 5`
+   - `7.5±0.25 → 7.5` (borderline display)
+   - `7.5..<12.5 → 10`
+   - `12.5±0.25 → 12.5` (borderline display)
+   - `>=12.5 → 15`
 
 Quality/info:
 - ShortDuration = true if time‑to‑peak < 2 s

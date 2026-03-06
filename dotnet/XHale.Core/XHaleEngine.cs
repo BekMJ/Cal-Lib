@@ -18,33 +18,47 @@ public sealed class XHaleEngine : IXHaleEngine
     // 3) T_base_pre: average of pre-breath temps; else initial temp baseline.
     // 4) r_peak (human path): max raw CO after breath start (no smoothing).
     // 5) ΔT = T_peak - T_base_pre.
-    // 6) Decision rule: if ΔT > 2.0°C use breath calibration; else exponential-fit gas calibration.
-    //    Gas fit uses per-device constants for known serial prefixes; otherwise global constants.
-    // 7) ppm = max(0, (ΔR_comp - intercept) / slope) for human breath; ppm = A / G for gas.
-    // 8) Quality gates: ShortDuration (<2s), SmallTemperatureRise (ΔT < 2°C).
+    // 6) Decision rule: if ΔT > 2.0°C use human-breath calibration; else gas-fit calibration.
+    // 7) Human path: ppm = max(0, (ΔR_comp - intercept) / slope).
+    // 8) Gas path: fit exponential amplitude on drift-compensated signal over 20s after detected start.
+    // 9) Gas output is discretized to 0/5/10/15 ppm with borderline display points 7.5 and 12.5.
+    // 10) Quality gates: ShortDuration (<2s), SmallTemperatureRise (ΔT < 2°C).
     private const double CalibrationGasFallbackSlopeRawPerPpm = 0.98;
     private const double CalibrationGasFallbackInterceptRaw = -1.8;
     private const double BreathCalibrationSlopeRawPerPpm = 3.60;
     private const double BreathCalibrationInterceptRaw = 0.0;
     private const double BreathCalibrationTempThresholdC = 2.0;
     private const double BreathStartTempRiseC = 0.8;
-    private const double TemperatureCompensationRawPerC = 0.80;
+    private const double TemperatureCompensationRawPerC = 17.30;
     private const double VoltageCompensationRawPerV = 150.30;
     private const double WarmupDurationSec = 20.0;
     private const double FitWindowSec = 20.0;
     private const double GasGainRawPerPpm = 0.695;
     private const double GasTauSec = 22.0;
-    private const double BaselineWindowSec = 5.0;
     private const double StartSlopeThresholdRawPerSec = 0.1;
     private const double StartMinDeltaRaw = 1.0;
+    private const double GasThresholdZeroToFivePpm = 2.5;
+    private const double GasThresholdFiveToTenPpm = 7.5;
+    private const double GasThresholdTenToFifteenPpm = 12.5;
+    private const double GasThresholdBorderlineBandPpm = 0.25;
     private const double TrimFraction = 0.10;
     private static readonly Dictionary<string, DeviceGasCalibration> DeviceGasCalibrations = new(StringComparer.Ordinal)
     {
+        // Existing legacy table
         ["6C8A4BC7"] = new DeviceGasCalibration(-0.0227256, 0.798849, 34.25, 5.5),
         ["D1A07CD4"] = new DeviceGasCalibration(-0.0637795, 0.653858, 14.5, 1.4),
         ["D92EC0CB"] = new DeviceGasCalibration(-0.0401157, 0.724937, 19.5, 4.0),
         ["F2E4CB88"] = new DeviceGasCalibration(-0.0314408, 0.697511, 19.5, 3.3),
         ["F685F16F"] = new DeviceGasCalibration(-0.0333294, 0.692745, 24.5, 5.6),
+        // 0/5/10/15 campaign devices
+        ["36F14E25"] = new DeviceGasCalibration(-2.089954189448795, 74.80982480894498, 22.0, 3.0),
+        ["4F2F6B63"] = new DeviceGasCalibration(-2.1033249593616072, 39.7056459294788, 22.0, 3.0),
+        ["9E9F6459"] = new DeviceGasCalibration(-1.780570415250479, 59.16004336321591, 22.0, 3.0),
+        ["B73545B1"] = new DeviceGasCalibration(-1.9470696024826366, 80.7635699785618, 22.0, 3.0),
+        ["7FF4CB9D"] = new DeviceGasCalibration(-2.928596389050625, 68.33999181557918, 22.0, 3.0),
+        ["E0AED989"] = new DeviceGasCalibration(-3.1222597553873244, 61.93527632478544, 22.0, 3.0),
+        ["E5ACF73C"] = new DeviceGasCalibration(-3.4828421665696094, 79.87938353276542, 22.0, 3.0),
+        ["F7CF3358"] = new DeviceGasCalibration(-1.703436225975285, 55.52555675050862, 22.0, 3.0),
     };
     private double? _baselineExplicitCoRaw;
     private double? _baselineExplicitTempC;
@@ -184,24 +198,21 @@ public sealed class XHaleEngine : IXHaleEngine
         }
         else
         {
-            double gasBaseline = ComputeGasBaseline(coRaw, warmupSampleCount, samplePeriodSec);
-            int gasStartIdx = FindGasStartIndex(coRaw, gasBaseline, warmupSampleCount, samplePeriodSec);
-            double fitDuration = ComputeFitDuration(gasStartIdx, n, samplePeriodSec);
-            duration = fitDuration;
             var calibration = GetGasCalibrationForDevice(deviceSerial);
-            if (TryFitGasPpm(coRaw, gasBaseline, gasStartIdx, samplePeriodSec, calibration, out double gasPpm))
+            if (TryFitGasPpm(coRaw, samplePeriodSec, calibration, out double gasPpm, out double fitDuration))
             {
-                estimatedPpm = Math.Max(0, gasPpm);
+                duration = fitDuration;
+                estimatedPpm = QuantizeGasPpm(Math.Max(0, gasPpm));
             }
             else if (TryFitGasPpm(
                 coRaw,
-                gasBaseline,
-                gasStartIdx,
                 samplePeriodSec,
                 DeviceGasCalibration.Global(GasGainRawPerPpm, GasTauSec),
-                out double fallbackGasPpm))
+                out double fallbackGasPpm,
+                out double fallbackFitDuration))
             {
-                estimatedPpm = Math.Max(0, fallbackGasPpm);
+                duration = fallbackFitDuration;
+                estimatedPpm = QuantizeGasPpm(Math.Max(0, fallbackGasPpm));
             }
             else
             {
@@ -210,7 +221,8 @@ public sealed class XHaleEngine : IXHaleEngine
                 double deltaRComp = (rPeak - rBasePre)
                     - (TemperatureCompensationRawPerC * deltaT)
                     - (VoltageCompensationRawPerV * deltaV);
-                estimatedPpm = Math.Max(0, (deltaRComp - CalibrationGasFallbackInterceptRaw) / CalibrationGasFallbackSlopeRawPerPpm);
+                double fallbackPpm = Math.Max(0, (deltaRComp - CalibrationGasFallbackInterceptRaw) / CalibrationGasFallbackSlopeRawPerPpm);
+                estimatedPpm = QuantizeGasPpm(fallbackPpm);
             }
         }
 
@@ -461,71 +473,51 @@ public sealed class XHaleEngine : IXHaleEngine
         return 0;
     }
 
-    private static double ComputeGasBaseline(double[] coRaw, int warmupSampleCount, double samplePeriodSec)
-    {
-        int baselineWindowCount = ComputeSampleCountForSeconds(BaselineWindowSec, samplePeriodSec, warmupSampleCount);
-        int startIdx = Math.Max(0, warmupSampleCount - baselineWindowCount);
-        int count = Math.Max(0, warmupSampleCount - startIdx);
-        return count > 0 ? Mean(coRaw, startIdx, count) : coRaw[0];
-    }
-
-    private static int FindGasStartIndex(double[] coRaw, double baseline, int warmupSampleCount, double samplePeriodSec)
-    {
-        int n = coRaw.Length;
-        int searchStart = Math.Min(warmupSampleCount, n - 1);
-        if (searchStart >= n - 1) return searchStart;
-
-        double[] delta = new double[n];
-        double[] smoothed = new double[n];
-        for (int i = 0; i < n; i++)
-        {
-            delta[i] = coRaw[i] - baseline;
-        }
-        for (int i = 0; i < n; i++)
-        {
-            int s = Math.Max(0, i - 1);
-            int e = Math.Min(n - 1, i + 1);
-            double sum = 0;
-            int count = 0;
-            for (int j = s; j <= e; j++) { sum += delta[j]; count++; }
-            smoothed[i] = sum / count;
-        }
-
-        for (int i = searchStart + 1; i < n; i++)
-        {
-            double slope = (smoothed[i] - smoothed[i - 1]) / samplePeriodSec;
-            if (slope >= StartSlopeThresholdRawPerSec && smoothed[i] >= StartMinDeltaRaw)
-            {
-                return i;
-            }
-        }
-        return searchStart;
-    }
-
     private static bool TryFitGasPpm(
         double[] coRaw,
-        double baseline,
-        int startIdx,
         double samplePeriodSec,
         DeviceGasCalibration calibration,
-        out double ppm)
+        out double ppm,
+        out double fitDurationSec)
     {
         ppm = 0;
-        int n = coRaw.Length;
-        int maxCount = n - startIdx;
-        if (maxCount <= 0) return false;
+        fitDurationSec = 0;
+        if (coRaw.Length < 2) return false;
 
-        int fitCount = ComputeSampleCountForSeconds(FitWindowSec, samplePeriodSec, maxCount);
+        int n = coRaw.Length;
+        double[] times = new double[n];
+        for (int i = 0; i < n; i++)
+        {
+            times[i] = i * samplePeriodSec;
+        }
+
+        // Same anchor strategy as app-side gas fit.
+        double b0 = (coRaw[0] + coRaw[1]) / 2.0;
+        double t0 = (times[0] + times[1]) / 2.0;
+
+        double[] delta = new double[n];
+        for (int i = 0; i < n; i++)
+        {
+            double baselineAtTime = b0 + calibration.DriftRawPerSec * (times[i] - t0);
+            delta[i] = coRaw[i] - baselineAtTime;
+        }
+
+        int startIdx = FindGasStartIndex(delta, samplePeriodSec);
         double sumYF = 0;
         double sumF2 = 0;
-        for (int i = 0; i < fitCount; i++)
+        int usedCount = 0;
+        double startSec = times[startIdx];
+        for (int i = startIdx; i < n; i++)
         {
-            double u = i * samplePeriodSec;
+            double u = times[i] - startSec;
+            if (u < 0) continue;
+            if (u > FitWindowSec) break;
             double shiftedU = Math.Max(0, u - calibration.DeadTimeSec);
             double f = 1.0 - Math.Exp(-shiftedU / calibration.TauSec);
-            double y = (coRaw[startIdx + i] - baseline) - (calibration.DriftRawPerSec * u);
+            double y = delta[i];
             sumYF += y * f;
             sumF2 += f * f;
+            usedCount++;
         }
         if (sumF2 <= 0) return false;
 
@@ -533,14 +525,56 @@ public sealed class XHaleEngine : IXHaleEngine
         if (double.IsNaN(a) || double.IsInfinity(a)) return false;
 
         ppm = a / calibration.GainRawPerPpm;
+        fitDurationSec = Math.Max(0, (usedCount - 1) * samplePeriodSec);
         return !double.IsNaN(ppm) && !double.IsInfinity(ppm);
     }
 
-    private static double ComputeFitDuration(int startIdx, int n, double samplePeriodSec)
+    private static int FindGasStartIndex(double[] delta, double samplePeriodSec)
     {
-        int maxCount = Math.Max(1, n - startIdx);
-        int fitCount = ComputeSampleCountForSeconds(FitWindowSec, samplePeriodSec, maxCount);
-        return Math.Max(0, (fitCount - 1) * samplePeriodSec);
+        int n = delta.Length;
+        if (n < 2) return 0;
+
+        double[] smoothed = new double[n];
+        for (int i = 0; i < n; i++)
+        {
+            int s = Math.Max(0, i - 1);
+            int e = Math.Min(n - 1, i + 1);
+            double sum = 0;
+            int count = 0;
+            for (int j = s; j <= e; j++)
+            {
+                sum += delta[j];
+                count++;
+            }
+            smoothed[i] = sum / count;
+        }
+
+        for (int i = 1; i < n; i++)
+        {
+            double slope = (smoothed[i] - smoothed[i - 1]) / samplePeriodSec;
+            if (slope >= StartSlopeThresholdRawPerSec && delta[i] >= StartMinDeltaRaw)
+            {
+                return i;
+            }
+        }
+        return 0;
+    }
+
+    private static double QuantizeGasPpm(double ppm)
+    {
+        if (double.IsNaN(ppm) || double.IsInfinity(ppm))
+        {
+            return 0.0;
+        }
+
+        double clipped = Math.Max(0, ppm);
+        // Keep strict '<' so exactly 2.5 maps to 5 ppm.
+        if (clipped < GasThresholdZeroToFivePpm) return 0.0;
+        if (Math.Abs(clipped - GasThresholdFiveToTenPpm) <= GasThresholdBorderlineBandPpm) return GasThresholdFiveToTenPpm;
+        if (Math.Abs(clipped - GasThresholdTenToFifteenPpm) <= GasThresholdBorderlineBandPpm) return GasThresholdTenToFifteenPpm;
+        if (clipped < GasThresholdFiveToTenPpm) return 5.0;
+        if (clipped < GasThresholdTenToFifteenPpm) return 10.0;
+        return 15.0;
     }
 
     private DeviceGasCalibration GetGasCalibrationForDevice(string? deviceSerial)
@@ -589,5 +623,3 @@ public sealed class XHaleEngine : IXHaleEngine
 
     private readonly record struct Sample(double CoRaw, double TemperatureC, double HumidityPct, double TimestampS);
 }
-
-

@@ -41,7 +41,7 @@ public interface IXHaleEngine
     void ClearBaseline();
 
     // Decode CO PPM from current sample bytes using stored baseline and temperature compensation
-    // Uses: ΔR = CO_raw - CO_raw_baseline; ΔT = T - T_baseline; ppm = max(0, (ΔR - 0.80*ΔT) / 3.60)
+    // Uses: ΔR = CO_raw - CO_raw_baseline; ΔT = T - T_baseline; ppm = max(0, (ΔR - 17.30*ΔT) / 3.60)
     double DecodeCoPpmFromBytes(byte[] coBytes, byte[] temperatureBytes);
     double DecodeCoPpmFromBytes(byte[] coBytes, byte[] temperatureBytes, bool bigEndian);
 
@@ -49,5 +49,4 @@ public interface IXHaleEngine
     double AverageTemperatureCFromBytes(System.Collections.Generic.IEnumerable<byte[]> temperatureSamplesBytes);
     double AverageTemperatureCFromBytes(System.Collections.Generic.IEnumerable<byte[]> temperatureSamplesBytes, bool bigEndian);
 }
-
 
