@@ -8,6 +8,7 @@ public sealed class XHaleEngine : IXHaleEngine
 {
     private string? _licenseKey;
     private string? _deviceSerialPrefix;
+    private readonly Dictionary<string, DeviceGasCalibration> _injectedDeviceGasCalibrations = new(StringComparer.Ordinal);
 
     private readonly List<Sample> _samples = new(capacity: 1024);
 
@@ -22,7 +23,7 @@ public sealed class XHaleEngine : IXHaleEngine
     // 7) Human path: ppm = max(0, (ΔR_comp - intercept) / slope).
     // 8) Gas path: fit exponential amplitude on drift-compensated signal over 20s after detected start.
     // 9) Gas output is discretized to 0/5/10/15 ppm with borderline display points 7.5 and 12.5.
-    // 10) Quality gates: ShortDuration (<2s), SmallTemperatureRise (ΔT < 2°C).
+    // 10) Quality gates: ShortDuration (<5s), SmallTemperatureRise (ΔT < 1°C).
     private const double CalibrationGasFallbackSlopeRawPerPpm = 0.98;
     private const double CalibrationGasFallbackInterceptRaw = -1.8;
     private const double BreathCalibrationSlopeRawPerPpm = 3.60;
@@ -42,23 +43,24 @@ public sealed class XHaleEngine : IXHaleEngine
     private const double GasThresholdTenToFifteenPpm = 12.5;
     private const double GasThresholdBorderlineBandPpm = 0.25;
     private const double TrimFraction = 0.10;
-    private static readonly Dictionary<string, DeviceGasCalibration> DeviceGasCalibrations = new(StringComparer.Ordinal)
+    private static readonly Dictionary<string, DeviceGasCalibration> DefaultDeviceGasCalibrations = new(StringComparer.Ordinal)
     {
-        // Existing legacy table
-        ["6C8A4BC7"] = new DeviceGasCalibration(-0.0227256, 0.798849, 34.25, 5.5),
-        ["D1A07CD4"] = new DeviceGasCalibration(-0.0637795, 0.653858, 14.5, 1.4),
-        ["D92EC0CB"] = new DeviceGasCalibration(-0.0401157, 0.724937, 19.5, 4.0),
-        ["F2E4CB88"] = new DeviceGasCalibration(-0.0314408, 0.697511, 19.5, 3.3),
-        ["F685F16F"] = new DeviceGasCalibration(-0.0333294, 0.692745, 24.5, 5.6),
-        // 0/5/10/15 campaign devices
-        ["36F14E25"] = new DeviceGasCalibration(-2.089954189448795, 74.80982480894498, 22.0, 3.0),
-        ["4F2F6B63"] = new DeviceGasCalibration(-2.1033249593616072, 39.7056459294788, 22.0, 3.0),
-        ["9E9F6459"] = new DeviceGasCalibration(-1.780570415250479, 59.16004336321591, 22.0, 3.0),
-        ["B73545B1"] = new DeviceGasCalibration(-1.9470696024826366, 80.7635699785618, 22.0, 3.0),
-        ["7FF4CB9D"] = new DeviceGasCalibration(-2.928596389050625, 68.33999181557918, 22.0, 3.0),
-        ["E0AED989"] = new DeviceGasCalibration(-3.1222597553873244, 61.93527632478544, 22.0, 3.0),
-        ["E5ACF73C"] = new DeviceGasCalibration(-3.4828421665696094, 79.87938353276542, 22.0, 3.0),
-        ["F7CF3358"] = new DeviceGasCalibration(-1.703436225975285, 55.52555675050862, 22.0, 3.0),
+        ["36F14E25"] = new DeviceGasCalibration(-11.614786086534453, 41.716293614542884, 1.0, 4.4999999999999964),
+        ["3BBF9785"] = new DeviceGasCalibration(-10.471969696969502, 31.479081945883948, 1.0, 0.0),
+        ["4F2F6B63"] = new DeviceGasCalibration(-12.012171684817618, 22.527506773281576, 1.0, 0.0),
+        ["6C8A4BC7"] = new DeviceGasCalibration(-3.0050179211461976, 24.755280783644842, 1.0, 4.999999999999998),
+        ["6F19F9D0"] = new DeviceGasCalibration(-1.8432432432439438, 18.34507990192077, 1.0, 4.999999999999998),
+        ["794093CF"] = new DeviceGasCalibration(-2.756746031747078, 27.690993101572072, 1.0, 6.9999999999999964),
+        ["7ED2FA3A"] = new DeviceGasCalibration(-2.0427035330255703, 158.29719571864192, 36.0, 6.899999999999997),
+        ["7FF4CB9D"] = new DeviceGasCalibration(-10.0332133813142, 35.121022728144894, 1.0, 3.4999999999999964),
+        ["9E9F6459"] = new DeviceGasCalibration(-10.141800128122737, 62.29243020944069, 9.0, 6.9999999999999964),
+        ["B73545B1"] = new DeviceGasCalibration(-10.894644909215634, 222.95554759553872, 37.0, 6.9999999999999964),
+        ["D1A07CD4"] = new DeviceGasCalibration(-2.0127731092436667, 134.06462623156233, 37.0, 6.9999999999999964),
+        ["D92EC0CB"] = new DeviceGasCalibration(-2.0757575757569358, 21.625101885995086, 1.0, 0.0),
+        ["DC3F9A7B"] = new DeviceGasCalibration(3.5085714285715164, 32.297927359727716, 4.0, 6.9999999999999964),
+        ["E5ACF73C"] = new DeviceGasCalibration(-10.882020525122973, 35.64978304202127, 1.0, 0.0),
+        ["F2E4CB88"] = new DeviceGasCalibration(-2.387121212121121, 25.45262808091884, 6.0, 1.4500000000000002),
+        ["F7CF3358"] = new DeviceGasCalibration(-2.887169760194338, 18.93036200071086, 1.0, 0.0),
     };
     private double? _baselineExplicitCoRaw;
     private double? _baselineExplicitTempC;
@@ -75,6 +77,38 @@ public sealed class XHaleEngine : IXHaleEngine
     public void SetDeviceSerial(string? serial)
     {
         _deviceSerialPrefix = NormalizeSerialPrefix(serial);
+    }
+
+    public void SetPerDeviceGasCalibration(string? serialOrPrefix, double driftRawPerSec, double gainRawPerPpm, double tauSec, double deadTimeSec)
+    {
+        string? prefix = NormalizeSerialPrefix(serialOrPrefix);
+        if (prefix == null)
+        {
+            throw new ArgumentException("Serial or prefix must normalize to 8 alphanumeric characters.", nameof(serialOrPrefix));
+        }
+        if (gainRawPerPpm <= 0) throw new ArgumentOutOfRangeException(nameof(gainRawPerPpm));
+        if (tauSec <= 0) throw new ArgumentOutOfRangeException(nameof(tauSec));
+
+        _injectedDeviceGasCalibrations[prefix] = new DeviceGasCalibration(
+            driftRawPerSec,
+            gainRawPerPpm,
+            tauSec,
+            Math.Max(0.0, deadTimeSec)
+        );
+    }
+
+    public void ClearPerDeviceGasCalibration(string? serialOrPrefix)
+    {
+        string? prefix = NormalizeSerialPrefix(serialOrPrefix);
+        if (prefix != null)
+        {
+            _injectedDeviceGasCalibrations.Remove(prefix);
+        }
+    }
+
+    public void ClearAllInjectedPerDeviceGasCalibrations()
+    {
+        _injectedDeviceGasCalibrations.Clear();
     }
 
     public void ResetSession()
@@ -216,18 +250,19 @@ public sealed class XHaleEngine : IXHaleEngine
             }
             else
             {
-                // Preserve older fallback behavior when fit is not computable.
+                // Match the app-side duration-bucket fallback when fit is not computable.
                 double deltaV = 0.0;
                 double deltaRComp = (rPeak - rBasePre)
                     - (TemperatureCompensationRawPerC * deltaT)
                     - (VoltageCompensationRawPerV * deltaV);
-                double fallbackPpm = Math.Max(0, (deltaRComp - CalibrationGasFallbackInterceptRaw) / CalibrationGasFallbackSlopeRawPerPpm);
+                var gasCoefficients = GasCalibrationCoefficients(duration);
+                double fallbackPpm = Math.Max(0, (deltaRComp - gasCoefficients.Intercept) / gasCoefficients.Slope);
                 estimatedPpm = QuantizeGasPpm(fallbackPpm);
             }
         }
 
-        bool shortDuration = duration < 2.0;
-        bool smallTempRise = deltaT < BreathCalibrationTempThresholdC;
+        bool shortDuration = duration < 5.0;
+        bool smallTempRise = deltaT < 1.0;
 
         return new XHBreathResult(estimatedPpm, duration, shortDuration, smallTempRise);
     }
@@ -577,10 +612,31 @@ public sealed class XHaleEngine : IXHaleEngine
         return 15.0;
     }
 
+    private static (double Slope, double Intercept) GasCalibrationCoefficients(double evalSeconds)
+    {
+        int evalKey = (int)Math.Round(evalSeconds);
+        return evalKey switch
+        {
+            5 => (0.0406375, -0.0770252),
+            10 => (0.126693, -0.475432),
+            15 => (0.176892, -0.0411687),
+            20 => (0.241434, -0.339973),
+            30 => (0.305976, -0.638778),
+            40 => (0.349004, -0.837981),
+            50 => (0.370518, -0.937583),
+            60 => (0.370518, -0.937583),
+            _ => (CalibrationGasFallbackSlopeRawPerPpm, CalibrationGasFallbackInterceptRaw),
+        };
+    }
+
     private DeviceGasCalibration GetGasCalibrationForDevice(string? deviceSerial)
     {
         string? serialPrefix = NormalizeSerialPrefix(deviceSerial) ?? _deviceSerialPrefix;
-        if (serialPrefix != null && DeviceGasCalibrations.TryGetValue(serialPrefix, out var calibration))
+        if (serialPrefix != null && _injectedDeviceGasCalibrations.TryGetValue(serialPrefix, out var injectedCalibration))
+        {
+            return injectedCalibration;
+        }
+        if (serialPrefix != null && DefaultDeviceGasCalibrations.TryGetValue(serialPrefix, out var calibration))
         {
             return calibration;
         }

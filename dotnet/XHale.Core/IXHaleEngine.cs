@@ -8,6 +8,10 @@ public interface IXHaleEngine
     // Optional: set BLE serial so known devices can use per-device gas-fit constants.
     // Pass null/empty to clear and use global calibration.
     void SetDeviceSerial(string? serial);
+    // Optional: inject newer per-device gas-fit constants from the host app.
+    void SetPerDeviceGasCalibration(string? serialOrPrefix, double driftRawPerSec, double gainRawPerPpm, double tauSec, double deadTimeSec);
+    void ClearPerDeviceGasCalibration(string? serialOrPrefix);
+    void ClearAllInjectedPerDeviceGasCalibrations();
     void ResetSession();
     void FeedSample(double coRaw, double temperatureC, double humidityPct, DateTimeOffset timestamp);
     XHBreathResult AnalyzeBreath();
@@ -49,4 +53,3 @@ public interface IXHaleEngine
     double AverageTemperatureCFromBytes(System.Collections.Generic.IEnumerable<byte[]> temperatureSamplesBytes);
     double AverageTemperatureCFromBytes(System.Collections.Generic.IEnumerable<byte[]> temperatureSamplesBytes, bool bigEndian);
 }
-
