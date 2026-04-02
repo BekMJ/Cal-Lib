@@ -605,13 +605,11 @@ public sealed class XHaleEngine : IXHaleEngine
         }
 
         double clipped = Math.Max(0, ppm);
-        // Keep strict '<' so exactly 2.5 maps to 5 ppm.
-        if (clipped < GasThresholdZeroToFivePpm) return 0.0;
-        if (Math.Abs(clipped - GasThresholdFiveToTenPpm) <= GasThresholdBorderlineBandPpm) return GasThresholdFiveToTenPpm;
-        if (Math.Abs(clipped - GasThresholdTenToFifteenPpm) <= GasThresholdBorderlineBandPpm) return GasThresholdTenToFifteenPpm;
-        if (clipped < GasThresholdFiveToTenPpm) return 5.0;
-        if (clipped < GasThresholdTenToFifteenPpm) return 10.0;
-        return 15.0;
+        if (clipped == 0.0) return 0.0;
+        if (clipped >= 2.0 && clipped <= 7.0) return 5.0;
+        if (clipped >= 8.0 && clipped <= 12.0) return 10.0;
+        if (clipped >= 13.0 && clipped <= 17.0) return 15.0;
+        return clipped;
     }
 
     private static (double Slope, double Intercept) GasCalibrationCoefficients(double evalSeconds)
