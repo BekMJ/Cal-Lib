@@ -37,6 +37,10 @@ var breath2 = engine.AnalyzeBreath(coRawBigEndian: beBytePairs, temperatureC: te
 // Optional alternative: set serial once and keep existing AnalyzeBreath(...) calls unchanged
 engine.SetDeviceSerial(disSerialString);
 
+// New firmware path: read the 32-byte CAL_READ characteristic from service 0x181A,
+// then let the SDK validate CRC/layout and use those constants for gas analysis.
+bool accepted = engine.TrySetFirmwareGasCalibrationRecord(calReadBytes);
+
 // Optional: inject newer per-device gas-fit constants fetched by the host app
 engine.SetPerDeviceGasCalibration(
     disSerialString,
@@ -81,6 +85,7 @@ engine.ClearBaseline();
 Notes:
 - CO bytes can be 2 bytes (big-endian ushort) or 4 bytes (uint); both are accepted by SetBaselineFromBytes(...) and DecodeCoPpmFromBytes(...). Default CO endianness for these helpers is big-endian.
 - Temperature bytes can be 2 bytes (0x2A6E little-endian Int16 in centi-°C) or 4 bytes (UInt32). The helpers auto-handle 2-byte 0x2A6E. For baseline temperature you may also pass numeric °C via SetBaselineFromBytes(coBytes, averageTempC).
+- `DecodeCoPpmFromBytes(...)` is a single-sample helper. For gas-path samples it uses the active calibration gain only; use `AnalyzeBreath(...)` for the full 20-second gas fit with tau, dead time, and drift.
 
 ## Calibration (current)
 
@@ -100,7 +105,8 @@ Human breath path (ΔT > 2 °C):
    - ΔT = T_peak − T_base_pre
    - deltaRComp = (r_peak − r_base_pre) − (17.30 raw/°C) × ΔT − (150.30 raw/V) × ΔV
    - Voltage compensation is fixed at 0.0 in this managed stub (no ΔV input).
-6. ppm conversion: ppm = max(0, (deltaRComp − 0.0) / 3.6).
+6. ppm conversion:
+   - ppm = max(0, (deltaRComp − 63.20735653235655) / 11.558260683760434).
 
 Calibration‑gas path (ΔT ≤ 2 °C):
 4. Baseline anchor: first 2 CO samples define a baseline line with device drift.
@@ -110,22 +116,25 @@ Calibration‑gas path (ΔT ≤ 2 °C):
    - Find first index where slope ≥ 0.1 raw/s and ΔCO ≥ 1.0 raw.
    - If not found, t_start = 0 s.
 6. Exponential fit over 20 s window starting at t_start:
-   - For known device serial prefixes (first 8 alphanumeric chars, uppercased), the SDK uses the bundled per-device table.
+   - Firmware CAL_READ calibration, if provided through `TrySetFirmwareGasCalibrationRecord(...)`, wins first.
+   - For known device serial prefixes (first 8 alphanumeric chars, uppercased), the SDK uses injected constants or the bundled per-device table.
    - The host app can inject newer Firestore values with `SetPerDeviceGasCalibration(...)`.
-   - For other serials (or unset serial): global constants are used (drift 0, G 0.695, τ 22 s, dead 0 s).
+   - Unknown or unset serials with no firmware/injected/table calibration use the SDK's median generic gas profile.
    - Model: y(u) ≈ A(1 − e^(−max(0, u−dead)/τ)), with y drift-adjusted by `− drift*u`.
    - A = Σ y(u) f(u) / Σ f(u)^2, f(u) = 1 − e^(−max(0, u−dead)/τ)
-7. ppm conversion: ppm = A / G
+7. ppm conversion:
+   - calibrated path: ppm = A / G
+   - unknown / unset serials without calibration: ppm is computed with the median generic profile and `UsedGenericGasCalibration` is true.
 8. Gas output quantization:
-   - `<2.5 → 0`
-   - `2.5..<7.5 → 5`
-   - `7.5±0.25 → 7.5` (borderline display)
-   - `7.5..<12.5 → 10`
-   - `12.5±0.25 → 12.5` (borderline display)
-   - `>=12.5 → 15`
+   - `2.0...7.0 → 5`
+   - `8.0...12.0 → 10`
+   - `13.0...17.0 → 15`
+   - otherwise the continuous ppm is returned.
 
 Quality/info:
 - ShortDuration = true if duration < 5 s
 - SmallTemperatureRise = true if ΔT < 1 °C
+- MissingGasCalibration is retained for API compatibility; with the generic fallback it should normally stay false.
+- UsedGenericGasCalibration = true when gas-path raw CO used the SDK's median fallback instead of firmware, injected, or bundled serial constants.
 
 This remains a placeholder implementation; the API surface is intended to stay stable while coefficients may be refined later.

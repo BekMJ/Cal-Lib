@@ -6,8 +6,13 @@ public interface IXHaleEngine
 {
     void Initialize(string licenseKey);
     // Optional: set BLE serial so known devices can use per-device gas-fit constants.
-    // Pass null/empty to clear and use global calibration.
+    // Pass null/empty to clear. Unknown or unset serials fall back to the SDK's generic median gas profile.
     void SetDeviceSerial(string? serial);
+    // Optional: parse the 32-byte firmware CAL_READ blob and use it as the active gas calibration.
+    bool TrySetFirmwareGasCalibrationRecord(byte[] calibrationRecord);
+    bool TryParseFirmwareGasCalibrationRecord(byte[] calibrationRecord, out XHDeviceGasCalibration calibration);
+    void SetFirmwareGasCalibration(XHDeviceGasCalibration calibration);
+    void ClearFirmwareGasCalibration();
     // Optional: inject newer per-device gas-fit constants from the host app.
     void SetPerDeviceGasCalibration(string? serialOrPrefix, double driftRawPerSec, double gainRawPerPpm, double tauSec, double deadTimeSec);
     void ClearPerDeviceGasCalibration(string? serialOrPrefix);
@@ -44,8 +49,9 @@ public interface IXHaleEngine
     void SetBaselineFromBytes(byte[] coBytes, double averageTempC, bool bigEndian);
     void ClearBaseline();
 
-    // Decode CO PPM from current sample bytes using stored baseline and temperature compensation
-    // Uses: ΔR = CO_raw - CO_raw_baseline; ΔT = T - T_baseline; ppm = max(0, (ΔR - 17.30*ΔT) / 3.60)
+    // Decode CO PPM from current sample bytes using stored baseline.
+    // Human path uses the refit temperature-compensated formula.
+    // Gas path uses the active calibration gain only; use AnalyzeBreath(...) for full tau/dead/drift gas fitting.
     double DecodeCoPpmFromBytes(byte[] coBytes, byte[] temperatureBytes);
     double DecodeCoPpmFromBytes(byte[] coBytes, byte[] temperatureBytes, bool bigEndian);
 

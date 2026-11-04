@@ -1,6 +1,10 @@
 namespace XHale.Core;
 
-public sealed record XHBreathResult(double EstimatedPPM, double DurationSec, bool ShortDuration, bool SmallTemperatureRise);
+public sealed record XHBreathResult(double EstimatedPPM, double DurationSec, bool ShortDuration, bool SmallTemperatureRise)
+{
+    public bool MissingGasCalibration { get; init; }
+    public bool UsedGenericGasCalibration { get; init; }
+}
 
 public sealed record XHDeviceGasCalibration(
     double DriftRawPerSec,
@@ -8,4 +12,3 @@ public sealed record XHDeviceGasCalibration(
     double TauSec,
     double DeadTimeSec
 );
-

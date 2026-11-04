@@ -1,4 +1,5 @@
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -8,6 +9,7 @@ public sealed class XHaleEngine : IXHaleEngine
 {
     private string? _licenseKey;
     private string? _deviceSerialPrefix;
+    private DeviceGasCalibration? _firmwareDeviceGasCalibration;
     private readonly Dictionary<string, DeviceGasCalibration> _injectedDeviceGasCalibrations = new(StringComparer.Ordinal);
 
     private readonly List<Sample> _samples = new(capacity: 1024);
@@ -20,41 +22,65 @@ public sealed class XHaleEngine : IXHaleEngine
     // 4) r_peak (human path): max raw CO after breath start (no smoothing).
     // 5) ΔT = T_peak - T_base_pre.
     // 6) Decision rule: if ΔT > 2.0°C use human-breath calibration; else gas-fit calibration.
-    // 7) Human path: ppm = max(0, (ΔR_comp - intercept) / slope).
-    // 8) Gas path: fit exponential amplitude on drift-compensated signal over 20s after detected start.
-    // 9) Gas output is discretized to 0/5/10/15 ppm with borderline display points 7.5 and 12.5.
+    // 7) Human path: ppm = max(0, (ΔR_comp - intercept) / slope), using the paired-reference refit.
+    // 8) Gas path: firmware CAL_READ calibration wins; otherwise known serials use per-device exponential fit;
+    //    unknown serials use a median generic gas profile.
+    // 9) Gas output is discretized to 0/5/10/15 ppm only inside the configured display bands.
     // 10) Quality gates: ShortDuration (<5s), SmallTemperatureRise (ΔT < 1°C).
     private const double CalibrationGasFallbackSlopeRawPerPpm = 0.98;
     private const double CalibrationGasFallbackInterceptRaw = -1.8;
-    private const double BreathCalibrationSlopeRawPerPpm = 3.60;
-    private const double BreathCalibrationInterceptRaw = 0.0;
+    private const double BreathCalibrationSlopeRawPerPpm = 11.558260683760434;
+    private const double BreathCalibrationInterceptRaw = 63.20735653235655;
     private const double BreathCalibrationTempThresholdC = 2.0;
     private const double BreathStartTempRiseC = 0.8;
     private const double TemperatureCompensationRawPerC = 17.30;
     private const double VoltageCompensationRawPerV = 150.30;
     private const double WarmupDurationSec = 20.0;
     private const double FitWindowSec = 20.0;
-    private const double GasGainRawPerPpm = 0.695;
-    private const double GasTauSec = 22.0;
     private const double StartSlopeThresholdRawPerSec = 0.1;
     private const double StartMinDeltaRaw = 1.0;
-    private const double GasThresholdZeroToFivePpm = 2.5;
-    private const double GasThresholdFiveToTenPpm = 7.5;
-    private const double GasThresholdTenToFifteenPpm = 12.5;
-    private const double GasThresholdBorderlineBandPpm = 0.25;
     private const double TrimFraction = 0.10;
+    private const int FirmwareCalibrationRecordSize = 32;
+    private const uint FirmwareCalibrationMagic = 0x5843414C; // "XCAL" as little-endian uint32.
+    private const byte FirmwareCalibrationVersion = 1;
+    private const byte FirmwareCalibrationValidFlag = 0x01;
+    private const int FirmwareCalibrationOffsetMagic = 0;
+    private const int FirmwareCalibrationOffsetVersion = 4;
+    private const int FirmwareCalibrationOffsetFlags = 5;
+    private const int FirmwareCalibrationOffsetGainRawPerPpm = 12;
+    private const int FirmwareCalibrationOffsetTauSec = 16;
+    private const int FirmwareCalibrationOffsetDeadSec = 20;
+    private const int FirmwareCalibrationOffsetDriftRawPerSec = 24;
+    private const int FirmwareCalibrationOffsetCrc16 = 30;
+    // Robust median of the bundled per-device gas profiles. Used only when no firmware,
+    // injected, or serial-table calibration is available.
+    private static readonly DeviceGasCalibration GenericDeviceGasCalibration = new(
+        -6.100806002899952,
+        26.115734843177872,
+        1.669570638561888,
+        5.0);
     private static readonly Dictionary<string, DeviceGasCalibration> DefaultDeviceGasCalibrations = new(StringComparer.Ordinal)
     {
+        ["089D110A"] = new DeviceGasCalibration(-6.201368523949169, 25.272945436392902, 0.5, 6.0),
+        ["2924BA99"] = new DeviceGasCalibration(-5.598589065255732, 25.03119401510033, 1.5, 5.0),
         ["36F14E25"] = new DeviceGasCalibration(-11.614786086534453, 41.716293614542884, 1.0, 4.4999999999999964),
         ["3BBF9785"] = new DeviceGasCalibration(-7.030079043080153, 26.809030715544022, 0.5, 2.999999996791774),
+        ["4E6D1A4D"] = new DeviceGasCalibration(-5.248677248677249, 25.132835447724382, 2.0, 0.0),
         ["4F2F6B63"] = new DeviceGasCalibration(-12.012171684817618, 22.527506773281576, 1.0, 0.0),
+        ["525D442D"] = new DeviceGasCalibration(-7.7360368663594485, 26.93024617146331, 0.5, 6.0),
         ["6C8A4BC7"] = new DeviceGasCalibration(2.079120754421729, 23.656395073833398, 0.6222089674828004, 8.0),
         ["6F19F9D0"] = new DeviceGasCalibration(-5.439218510632482, 28.836833289278694, 1.8391412771237763, 6.438117004026197),
         ["794093CF"] = new DeviceGasCalibration(-0.6666643338872953, 24.844493808756724, 0.6297863426404107, 6.042329485419282),
         ["7ED2FA3A"] = new DeviceGasCalibration(-1.9995184049332049, 78.55491344311771, 12.0, 8.0),
         ["7FF4CB9D"] = new DeviceGasCalibration(-10.0332133813142, 35.121022728144894, 1.0, 3.4999999999999964),
+        ["8B817936"] = new DeviceGasCalibration(-4.798790627362056, 25.422438970811722, 0.5, 3.0),
+        ["96ABD9E6"] = new DeviceGasCalibration(-6.506666666666668, 24.513387824065155, 5.0, 5.0),
+        ["9C04C961"] = new DeviceGasCalibration(-6.619501133786848, 23.47937533700087, 2.0, 2.0),
         ["9E9F6459"] = new DeviceGasCalibration(-10.141800128122737, 62.29243020944069, 9.0, 6.9999999999999964),
+        ["A73EB860"] = new DeviceGasCalibration(-7.250830889540567, 24.70269801110892, 0.5, 5.0),
         ["B73545B1"] = new DeviceGasCalibration(-10.894644909215634, 222.95554759553872, 37.0, 6.9999999999999964),
+        ["CAE82C50"] = new DeviceGasCalibration(-6.708089330024814, 24.31855758437466, 3.0, 6.0),
+        ["F37B9134"] = new DeviceGasCalibration(-7.635978835978836, 38.230704909693806, 3.0, 6.0),
         ["D1A07CD4"] = new DeviceGasCalibration(-1.4545457480006594, 68.37467929189923, 11.576681630123998, 7.35659477241304),
         ["D92EC0CB"] = new DeviceGasCalibration(0.00006792920907690491, 21.210898372231238, 0.5, 0.0),
         ["DC3F9A7B"] = new DeviceGasCalibration(1.4605736066292012, 37.84666292119706, 3.7579959691515286, 6.254430626213045),
@@ -79,6 +105,81 @@ public sealed class XHaleEngine : IXHaleEngine
     public void SetDeviceSerial(string? serial)
     {
         _deviceSerialPrefix = NormalizeSerialPrefix(serial);
+    }
+
+    public bool TrySetFirmwareGasCalibrationRecord(byte[] calibrationRecord)
+    {
+        if (!TryParseFirmwareGasCalibrationRecord(calibrationRecord, out var calibration))
+        {
+            return false;
+        }
+
+        SetFirmwareGasCalibration(calibration);
+        return true;
+    }
+
+    public bool TryParseFirmwareGasCalibrationRecord(byte[] calibrationRecord, out XHDeviceGasCalibration calibration)
+    {
+        calibration = default!;
+        if (calibrationRecord == null || calibrationRecord.Length != FirmwareCalibrationRecordSize)
+        {
+            return false;
+        }
+
+        ReadOnlySpan<byte> record = calibrationRecord;
+        if (BinaryPrimitives.ReadUInt32LittleEndian(record.Slice(FirmwareCalibrationOffsetMagic, sizeof(uint))) != FirmwareCalibrationMagic)
+        {
+            return false;
+        }
+        if (record[FirmwareCalibrationOffsetVersion] != FirmwareCalibrationVersion)
+        {
+            return false;
+        }
+        byte flags = record[FirmwareCalibrationOffsetFlags];
+        if ((flags & ~FirmwareCalibrationValidFlag) != 0 || (flags & FirmwareCalibrationValidFlag) == 0)
+        {
+            return false;
+        }
+
+        ushort storedCrc = BinaryPrimitives.ReadUInt16LittleEndian(record.Slice(FirmwareCalibrationOffsetCrc16, sizeof(ushort)));
+        ushort computedCrc = ComputeFirmwareCrc16(record.Slice(0, FirmwareCalibrationOffsetCrc16));
+        if (storedCrc != computedCrc)
+        {
+            return false;
+        }
+
+        double gainRawPerPpm = ReadSingleLittleEndian(record, FirmwareCalibrationOffsetGainRawPerPpm);
+        double tauSec = ReadSingleLittleEndian(record, FirmwareCalibrationOffsetTauSec);
+        double deadSec = ReadSingleLittleEndian(record, FirmwareCalibrationOffsetDeadSec);
+        double driftRawPerSec = ReadSingleLittleEndian(record, FirmwareCalibrationOffsetDriftRawPerSec);
+        if (!IsValidFirmwareCalibration(driftRawPerSec, gainRawPerPpm, tauSec, deadSec))
+        {
+            return false;
+        }
+
+        calibration = new XHDeviceGasCalibration(driftRawPerSec, gainRawPerPpm, tauSec, deadSec);
+        return true;
+    }
+
+    public void SetFirmwareGasCalibration(XHDeviceGasCalibration calibration)
+    {
+        if (calibration == null) throw new ArgumentNullException(nameof(calibration));
+        if (!IsValidFirmwareCalibration(calibration.DriftRawPerSec, calibration.GainRawPerPpm, calibration.TauSec, calibration.DeadTimeSec))
+        {
+            throw new ArgumentOutOfRangeException(nameof(calibration), "Firmware gas calibration values are outside the accepted range.");
+        }
+
+        _firmwareDeviceGasCalibration = new DeviceGasCalibration(
+            calibration.DriftRawPerSec,
+            calibration.GainRawPerPpm,
+            calibration.TauSec,
+            Math.Max(0.0, calibration.DeadTimeSec)
+        );
+    }
+
+    public void ClearFirmwareGasCalibration()
+    {
+        _firmwareDeviceGasCalibration = null;
     }
 
     public void SetPerDeviceGasCalibration(string? serialOrPrefix, double driftRawPerSec, double gainRawPerPpm, double tauSec, double deadTimeSec)
@@ -224,6 +325,7 @@ public sealed class XHaleEngine : IXHaleEngine
 
         bool useBreathCalibration = deltaT > BreathCalibrationTempThresholdC;
         double estimatedPpm;
+        bool usedGenericGasCalibration = false;
         if (useBreathCalibration)
         {
             double deltaV = 0.0;
@@ -234,39 +336,39 @@ public sealed class XHaleEngine : IXHaleEngine
         }
         else
         {
-            var calibration = GetGasCalibrationForDevice(deviceSerial);
-            if (TryFitGasPpm(coRaw, samplePeriodSec, calibration, out double gasPpm, out double fitDuration))
+            if (TryGetGasCalibrationForDevice(deviceSerial, out var calibration))
             {
-                duration = fitDuration;
-                estimatedPpm = QuantizeGasPpm(Math.Max(0, gasPpm));
-            }
-            else if (TryFitGasPpm(
-                coRaw,
-                samplePeriodSec,
-                DeviceGasCalibration.Global(GasGainRawPerPpm, GasTauSec),
-                out double fallbackGasPpm,
-                out double fallbackFitDuration))
-            {
-                duration = fallbackFitDuration;
-                estimatedPpm = QuantizeGasPpm(Math.Max(0, fallbackGasPpm));
+                usedGenericGasCalibration = calibration == GenericDeviceGasCalibration;
+                if (TryFitGasPpm(coRaw, samplePeriodSec, calibration, out double gasPpm, out double fitDuration))
+                {
+                    duration = fitDuration;
+                    estimatedPpm = QuantizeGasPpm(Math.Max(0, gasPpm));
+                }
+                else
+                {
+                    // Match the app-side duration-bucket fallback when a known-device gas fit is not computable.
+                    double deltaV = 0.0;
+                    double deltaRComp = (rPeak - rBasePre)
+                        - (TemperatureCompensationRawPerC * deltaT)
+                        - (VoltageCompensationRawPerV * deltaV);
+                    var gasCoefficients = GasCalibrationCoefficients(duration);
+                    double fallbackPpm = Math.Max(0, (deltaRComp - gasCoefficients.Intercept) / gasCoefficients.Slope);
+                    estimatedPpm = QuantizeGasPpm(fallbackPpm);
+                }
             }
             else
             {
-                // Match the app-side duration-bucket fallback when fit is not computable.
-                double deltaV = 0.0;
-                double deltaRComp = (rPeak - rBasePre)
-                    - (TemperatureCompensationRawPerC * deltaT)
-                    - (VoltageCompensationRawPerV * deltaV);
-                var gasCoefficients = GasCalibrationCoefficients(duration);
-                double fallbackPpm = Math.Max(0, (deltaRComp - gasCoefficients.Intercept) / gasCoefficients.Slope);
-                estimatedPpm = QuantizeGasPpm(fallbackPpm);
+                throw new InvalidOperationException("Gas calibration fallback was not available.");
             }
         }
 
         bool shortDuration = duration < 5.0;
         bool smallTempRise = deltaT < 1.0;
 
-        return new XHBreathResult(estimatedPpm, duration, shortDuration, smallTempRise);
+        return new XHBreathResult(estimatedPpm, duration, shortDuration, smallTempRise)
+        {
+            UsedGenericGasCalibration = usedGenericGasCalibration
+        };
     }
 
     public XHBreathResult AnalyzeBreath(byte[][] coRawBigEndian, double[] temperatureC, double samplePeriodSec)
@@ -394,9 +496,16 @@ public sealed class XHaleEngine : IXHaleEngine
         double compensatedDeltaR = deltaR - (TemperatureCompensationRawPerC * deltaT);
 
         bool useBreathCalibration = deltaT > BreathCalibrationTempThresholdC;
-        double slope = useBreathCalibration ? BreathCalibrationSlopeRawPerPpm : CalibrationGasFallbackSlopeRawPerPpm;
-        double intercept = useBreathCalibration ? BreathCalibrationInterceptRaw : CalibrationGasFallbackInterceptRaw;
-        return Math.Max(0, (compensatedDeltaR - intercept) / slope);
+        if (!useBreathCalibration)
+        {
+            if (!TryGetGasCalibrationForDevice(deviceSerial: null, out var calibration))
+            {
+                return 0.0;
+            }
+            return Math.Max(0.0, deltaR / calibration.GainRawPerPpm);
+        }
+
+        return Math.Max(0, (compensatedDeltaR - BreathCalibrationInterceptRaw) / BreathCalibrationSlopeRawPerPpm);
     }
 
     public double AverageTemperatureCFromBytes(IEnumerable<byte[]> temperatureSamplesBytes)
@@ -629,18 +738,60 @@ public sealed class XHaleEngine : IXHaleEngine
         };
     }
 
-    private DeviceGasCalibration GetGasCalibrationForDevice(string? deviceSerial)
+    private bool TryGetGasCalibrationForDevice(string? deviceSerial, out DeviceGasCalibration calibration)
     {
+        if (_firmwareDeviceGasCalibration is { } firmwareCalibration)
+        {
+            calibration = firmwareCalibration;
+            return true;
+        }
+
         string? serialPrefix = NormalizeSerialPrefix(deviceSerial) ?? _deviceSerialPrefix;
         if (serialPrefix != null && _injectedDeviceGasCalibrations.TryGetValue(serialPrefix, out var injectedCalibration))
         {
-            return injectedCalibration;
+            calibration = injectedCalibration;
+            return true;
         }
-        if (serialPrefix != null && DefaultDeviceGasCalibrations.TryGetValue(serialPrefix, out var calibration))
+        if (serialPrefix != null && DefaultDeviceGasCalibrations.TryGetValue(serialPrefix, out var bundledCalibration))
         {
-            return calibration;
+            calibration = bundledCalibration;
+            return true;
         }
-        return DeviceGasCalibration.Global(GasGainRawPerPpm, GasTauSec);
+        calibration = GenericDeviceGasCalibration;
+        return true;
+    }
+
+    private static double ReadSingleLittleEndian(ReadOnlySpan<byte> record, int offset)
+    {
+        int bits = BinaryPrimitives.ReadInt32LittleEndian(record.Slice(offset, sizeof(float)));
+        return BitConverter.Int32BitsToSingle(bits);
+    }
+
+    private static ushort ComputeFirmwareCrc16(ReadOnlySpan<byte> data)
+    {
+        ushort crc = 0xFFFF;
+        foreach (byte b in data)
+        {
+            crc = (ushort)(((crc >> 8) & 0xFF) | (crc << 8));
+            crc ^= b;
+            crc ^= (ushort)(((byte)(crc & 0xFF)) >> 4);
+            crc ^= (ushort)((crc << 8) << 4);
+            crc ^= (ushort)(((crc & 0xFF) << 4) << 1);
+        }
+        return crc;
+    }
+
+    private static bool IsValidFirmwareCalibration(double driftRawPerSec, double gainRawPerPpm, double tauSec, double deadTimeSec)
+    {
+        return IsFinite(gainRawPerPpm) && gainRawPerPpm >= 0.001 && gainRawPerPpm <= 100000.0
+            && IsFinite(tauSec) && tauSec >= 0.0 && tauSec <= 3600.0
+            && IsFinite(deadTimeSec) && deadTimeSec >= 0.0 && deadTimeSec <= 600.0
+            && IsFinite(driftRawPerSec) && driftRawPerSec >= -1000.0 && driftRawPerSec <= 1000.0;
+    }
+
+    private static bool IsFinite(double value)
+    {
+        return !double.IsNaN(value) && !double.IsInfinity(value);
     }
 
     private static string? NormalizeSerialPrefix(string? serial)
@@ -670,11 +821,6 @@ public sealed class XHaleEngine : IXHaleEngine
         double TauSec,
         double DeadTimeSec)
     {
-        public static DeviceGasCalibration Global(double gainRawPerPpm, double tauSec) => new(
-            DriftRawPerSec: 0.0,
-            GainRawPerPpm: gainRawPerPpm,
-            TauSec: tauSec,
-            DeadTimeSec: 0.0);
     }
 
     private readonly record struct Sample(double CoRaw, double TemperatureC, double HumidityPct, double TimestampS);
