@@ -85,5 +85,22 @@ Check(threw, "uncalibrated sgx single-sample throws");
 var e9c = New("12345678", null); e9c.SetBaseline(30000, 22.0);
 Check(e9c.DecodeCoPpmFromBytes(Be(31000), Temp(30.0)) == Math.Max(0, ((1000 - 17.30 * 8.0) - 63.20735653235655) / 11.558260683760434), "winsen single-sample unchanged");
 
+// 10. Model Number before serial (BLE read order) must not be lost
+var e10 = new XHaleEngine(); e10.Initialize("k");
+e10.SetModelNumber("XHale-NRF-SGX"); e10.SetDeviceSerial("ABCDEF01");
+Check(e10.GetSensorProfile().Profile == XHSensorProfile.NrfSgx, "model before serial kept");
+e10.ClearDeviceIdentity(); e10.SetModelNumber("XHale-EFR-SGX"); e10.SetDeviceSerial("12345678");
+Check(e10.GetSensorProfile().Profile == XHSensorProfile.EfrSgx, "model before serial after clear");
+e10.SetDeviceSerial(null); e10.SetDeviceSerial("12345678");
+Check(e10.GetSensorProfile().Profile == XHSensorProfile.NrfMe3, "null serial clears model");
+// 11. Atomic identity
+var e11 = new XHaleEngine(); e11.Initialize("k");
+e11.SetDeviceIdentity("11111111", "XHale-NRF-SGX");
+Check(e11.GetSensorProfile().Profile == XHSensorProfile.NrfSgx, "identity sets sgx");
+e11.SetDeviceIdentity("22222222", null);
+Check(e11.GetSensorProfile().Profile == XHSensorProfile.NrfMe3, "identity replaces model");
+// 12. Blocked results do not raise breath-quality flags
+Check(!r6.ShortDuration && !r6.SmallTemperatureRise, "blocked result quality flags false");
+
 Console.WriteLine($"{pass} passed, {fail} failed");
 return fail == 0 ? 0 : 1;

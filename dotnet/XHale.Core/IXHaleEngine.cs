@@ -10,9 +10,15 @@ public interface IXHaleEngine
     void SetDeviceSerial(string? serial);
     // Sensor profile: pass the DIS Model Number (0x2A24) string read from the device, or null if the
     // device has no Model Number characteristic (all deployed nRF + Winsen firmware).
-    // Call AFTER SetDeviceSerial(...): changing the serial clears a previously set Model Number.
+    // Either order with SetDeviceSerial works for a fresh connection. Switching from one serial to another
+    // (or to null) clears the previous device's Model Number, so call ClearDeviceIdentity() on disconnect,
+    // or use SetDeviceIdentity(...) to set both at once (preferred).
     // Not calling it at all keeps legacy Winsen behavior (except known SGX prototype serials).
     void SetModelNumber(string? modelNumber);
+    // Preferred: set serial and Model Number together once both DIS reads have completed.
+    void SetDeviceIdentity(string? serial, string? modelNumber);
+    // Call on disconnect: forgets the serial and Model Number of the previous device.
+    void ClearDeviceIdentity();
     // Which processing profile applies to the current device (or to deviceSerial, if given).
     XHSensorProfileResolution GetSensorProfile(string? deviceSerial = null);
     // Optional: parse the 32-byte firmware CAL_READ blob and use it as the active gas calibration.

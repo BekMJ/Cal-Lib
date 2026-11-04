@@ -112,10 +112,27 @@ public sealed class XHaleEngine : IXHaleEngine
         string? prefix = NormalizeSerialPrefix(serial);
         if (!string.Equals(prefix, _deviceSerialPrefix, StringComparison.Ordinal))
         {
-            // A different device: forget the previous device's Model Number.
-            _modelNumber = null;
+            // Switching away from a known device (to another device, or to null on disconnect) forgets
+            // that device's Model Number. When no device was set yet, a Model Number supplied first
+            // belongs to the incoming device and is kept, so BLE read order does not matter.
+            if (_deviceSerialPrefix != null)
+            {
+                _modelNumber = null;
+            }
         }
         _deviceSerialPrefix = prefix;
+    }
+
+    public void SetDeviceIdentity(string? serial, string? modelNumber)
+    {
+        _deviceSerialPrefix = NormalizeSerialPrefix(serial);
+        _modelNumber = XHSensorProfiles.NormalizeModelNumber(modelNumber);
+    }
+
+    public void ClearDeviceIdentity()
+    {
+        _deviceSerialPrefix = null;
+        _modelNumber = null;
     }
 
     public void SetModelNumber(string? modelNumber)
@@ -424,7 +441,8 @@ public sealed class XHaleEngine : IXHaleEngine
 
     private static XHBreathResult BlockedResult(XHSensorProfileResolution resolution, string reason)
     {
-        return new XHBreathResult(0, 0, true, true)
+        // Quality flags stay false: the reason is PredictionBlocked/PredictionBlockedReason, not the breath.
+        return new XHBreathResult(0, 0, false, false)
         {
             SensorProfile = resolution.Profile is { } p ? XHSensorProfiles.Tag(p) : "unsupported",
             SensorProfileSource = resolution.Source,

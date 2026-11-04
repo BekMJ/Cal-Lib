@@ -37,9 +37,11 @@ var breath2 = engine.AnalyzeBreath(coRawBigEndian: beBytePairs, temperatureC: te
 // Optional alternative: set serial once and keep existing AnalyzeBreath(...) calls unchanged
 engine.SetDeviceSerial(disSerialString);
 
-// Sensor profile (Winsen vs SGX): pass the DIS Model Number (0x2A24) string, or null if the
-// device has no Model Number characteristic. Call this AFTER SetDeviceSerial(...).
-engine.SetModelNumber(modelNumberStringOrNull);
+// Sensor profile (Winsen vs SGX): pass the serial and the DIS Model Number (0x2A24) string together,
+// or null for the model if the device has no Model Number characteristic.
+engine.SetDeviceIdentity(serial, modelNumberStringOrNull);
+// On disconnect:
+engine.ClearDeviceIdentity();
 
 // New firmware path: read the 32-byte CAL_READ characteristic from service 0x181A,
 // then let the SDK validate CRC/layout and use those constants for gas analysis.
@@ -107,7 +109,7 @@ The SDK supports three device profiles, selected from the BLE Device Information
 Host app responsibilities:
 
 1. Read 0x2A24 after service discovery. If the characteristic does not exist, pass `null`.
-2. Call `SetDeviceSerial(...)` first, then `SetModelNumber(...)`. Changing the serial clears the stored Model Number.
+2. Prefer `SetDeviceIdentity(serial, modelNumber)` once both DIS reads are done, and `ClearDeviceIdentity()` on disconnect. The separate `SetDeviceSerial(...)` / `SetModelNumber(...)` calls also work in either order on a fresh connection; switching from one serial to another clears the previous device's Model Number.
 3. Check `XHBreathResult.PredictionBlocked`. When it is `true`, `EstimatedPPM` is 0 and **must not be shown as a reading**; show `PredictionBlockedReason` instead.
 4. `DecodeCoPpmFromBytes(...)` throws `InvalidOperationException` for unsupported devices, EFR + SGX, and SGX devices without calibration. Call `GetSensorProfile()` first if you need to avoid the exception.
 
