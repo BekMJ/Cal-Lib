@@ -37,6 +37,10 @@ var breath2 = engine.AnalyzeBreath(coRawBigEndian: beBytePairs, temperatureC: te
 // Optional alternative: set serial once and keep existing AnalyzeBreath(...) calls unchanged
 engine.SetDeviceSerial(disSerialString);
 
+// Sensor profile (Winsen vs SGX): pass the DIS Model Number (0x2A24) string, or null if the
+// device has no Model Number characteristic. Call this AFTER SetDeviceSerial(...).
+engine.SetModelNumber(modelNumberStringOrNull);
+
 // New firmware path: read the 32-byte CAL_READ characteristic from service 0x181A,
 // then let the SDK validate CRC/layout and use those constants for gas analysis.
 bool accepted = engine.TrySetFirmwareGasCalibrationRecord(calReadBytes);
@@ -87,7 +91,31 @@ Notes:
 - Temperature bytes can be 2 bytes (0x2A6E little-endian Int16 in centi-°C) or 4 bytes (UInt32). The helpers auto-handle 2-byte 0x2A6E. For baseline temperature you may also pass numeric °C via SetBaselineFromBytes(coBytes, averageTempC).
 - `DecodeCoPpmFromBytes(...)` is a single-sample helper. For gas-path samples it uses the active calibration gain only; use `AnalyzeBreath(...)` for the full 20-second gas fit with tau, dead time, and drift.
 
+## Sensor profiles (Winsen ME3 vs SGX)
+
+The SDK supports three device profiles, selected from the BLE Device Information **Model Number (0x2A24)**:
+
+| Model Number | Profile | Processing |
+|---|---|---|
+| *(none)* | nRF + Winsen ME3 (legacy) | Unchanged: gas fit, plus the temperature-triggered human-breath formula |
+| *(none)*, serial A793BAFC / D0F18121 / 0DC44112 | nRF + SGX | Known SGX prototypes built before Model Number support |
+| `XHale-NRF-ME3` | nRF + Winsen ME3 | Same as legacy |
+| `XHale-NRF-SGX` | nRF + SGX | Per-device gas fit at every temperature rise. No Winsen human-breath formula, no Winsen temperature/voltage compensation, never the Winsen generic fallback |
+| `XHale-EFR-SGX` | EFR + SGX | Recognized; prediction disabled in this version (`XHSensorProfiles.EfrSgxPredictionEnabled`) |
+| anything else | unsupported | No prediction |
+
+Host app responsibilities:
+
+1. Read 0x2A24 after service discovery. If the characteristic does not exist, pass `null`.
+2. Call `SetDeviceSerial(...)` first, then `SetModelNumber(...)`. Changing the serial clears the stored Model Number.
+3. Check `XHBreathResult.PredictionBlocked`. When it is `true`, `EstimatedPPM` is 0 and **must not be shown as a reading**; show `PredictionBlockedReason` instead.
+4. `DecodeCoPpmFromBytes(...)` throws `InvalidOperationException` for unsupported devices, EFR + SGX, and SGX devices without calibration. Call `GetSensorProfile()` first if you need to avoid the exception.
+
+SGX devices need device-specific constants: firmware CAL_READ, `SetPerDeviceGasCalibration(...)`, or the bundled table (A793BAFC and D0F18121 are bundled with drift 0, tau 1 s, dead 0). Breath results now also report `SensorProfile` (`nrf_me3`, `nrf_sgx`, `efr_sgx`, `unsupported`) and `SensorProfileSource`.
+
 ## Calibration (current)
+
+Everything below describes the legacy nRF + Winsen ME3 profile. SGX profiles skip the human-breath path and always use the calibration-gas fit with device-specific constants.
 
 The current managed calibration implements:
 

@@ -8,6 +8,13 @@ public interface IXHaleEngine
     // Optional: set BLE serial so known devices can use per-device gas-fit constants.
     // Pass null/empty to clear. Unknown or unset serials fall back to the SDK's generic median gas profile.
     void SetDeviceSerial(string? serial);
+    // Sensor profile: pass the DIS Model Number (0x2A24) string read from the device, or null if the
+    // device has no Model Number characteristic (all deployed nRF + Winsen firmware).
+    // Call AFTER SetDeviceSerial(...): changing the serial clears a previously set Model Number.
+    // Not calling it at all keeps legacy Winsen behavior (except known SGX prototype serials).
+    void SetModelNumber(string? modelNumber);
+    // Which processing profile applies to the current device (or to deviceSerial, if given).
+    XHSensorProfileResolution GetSensorProfile(string? deviceSerial = null);
     // Optional: parse the 32-byte firmware CAL_READ blob and use it as the active gas calibration.
     bool TrySetFirmwareGasCalibrationRecord(byte[] calibrationRecord);
     bool TryParseFirmwareGasCalibrationRecord(byte[] calibrationRecord, out XHDeviceGasCalibration calibration);
