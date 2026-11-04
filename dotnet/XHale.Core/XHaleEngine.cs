@@ -9,6 +9,7 @@ public sealed class XHaleEngine : IXHaleEngine
 {
     private string? _licenseKey;
     private string? _deviceSerialPrefix;
+    private string? _modelNumber;
     private DeviceGasCalibration? _firmwareDeviceGasCalibration;
     private readonly Dictionary<string, DeviceGasCalibration> _injectedDeviceGasCalibrations = new(StringComparer.Ordinal);
 
@@ -89,6 +90,10 @@ public sealed class XHaleEngine : IXHaleEngine
         ["F2E4CB88"] = new DeviceGasCalibration(-1.7976168208247028, 23.94750224508536, 6.146536035184152, 1.2090464430028565),
         ["F685F16F"] = new DeviceGasCalibration(-6.000243481850735, 75.70296570995819, 12.0, 7.7959056072879145),
         ["F7CF3358"] = new DeviceGasCalibration(-2.887169760194338, 18.93036200071086, 1.0, 0.0),
+        // nRF + SGX prototypes (gain-only fit; algorithm settings drift 0, tau 1 s, dead 0).
+        // 0DC44112 is also an SGX prototype but has no bundled gain: it needs firmware or injected constants.
+        ["A793BAFC"] = new DeviceGasCalibration(0.0, 327.436077, 1.0, 0.0),
+        ["D0F18121"] = new DeviceGasCalibration(0.0, 307.666794, 1.0, 0.0),
     };
     private double? _baselineExplicitCoRaw;
     private double? _baselineExplicitTempC;
@@ -104,7 +109,23 @@ public sealed class XHaleEngine : IXHaleEngine
 
     public void SetDeviceSerial(string? serial)
     {
-        _deviceSerialPrefix = NormalizeSerialPrefix(serial);
+        string? prefix = NormalizeSerialPrefix(serial);
+        if (!string.Equals(prefix, _deviceSerialPrefix, StringComparison.Ordinal))
+        {
+            // A different device: forget the previous device's Model Number.
+            _modelNumber = null;
+        }
+        _deviceSerialPrefix = prefix;
+    }
+
+    public void SetModelNumber(string? modelNumber)
+    {
+        _modelNumber = XHSensorProfiles.NormalizeModelNumber(modelNumber);
+    }
+
+    public XHSensorProfileResolution GetSensorProfile(string? deviceSerial = null)
+    {
+        return XHSensorProfiles.Resolve(_modelNumber, NormalizeSerialPrefix(deviceSerial) ?? _deviceSerialPrefix);
     }
 
     public bool TrySetFirmwareGasCalibrationRecord(byte[] calibrationRecord)
@@ -284,6 +305,20 @@ public sealed class XHaleEngine : IXHaleEngine
 
         int n = coRaw.Length;
 
+        // Select the processing profile before any calculation (mirrors iOS SensorProfile.swift).
+        XHSensorProfileResolution profileResolution = GetSensorProfile(deviceSerial);
+        if (profileResolution.Profile is not { } sensorProfile)
+        {
+            return BlockedResult(profileResolution,
+                $"This device is not supported by this SDK version: {profileResolution.UnsupportedReason}. Please update the SDK.");
+        }
+        if (sensorProfile == XHSensorProfile.EfrSgx && !XHSensorProfiles.EfrSgxPredictionEnabled)
+        {
+            return BlockedResult(profileResolution,
+                "EFR + SGX devices are recognized, but CO prediction is not enabled yet in this SDK version.");
+        }
+        bool isLegacyWinsen = XHSensorProfiles.AllowsLegacyHumanBreathBranch(sensorProfile);
+
         int warmupSampleCount = ComputeSampleCountForSeconds(WarmupDurationSec, samplePeriodSec, n);
         double warmupCoBaseline = Mean(coRaw, 0, warmupSampleCount);
         double warmupTempBaseline = Mean(temperatureC, 0, warmupSampleCount);
@@ -323,7 +358,8 @@ public sealed class XHaleEngine : IXHaleEngine
         double tPeak = temperatureC[peakIdx];
         double deltaT = tPeak - tBasePre;
 
-        bool useBreathCalibration = deltaT > BreathCalibrationTempThresholdC;
+        // Temperature-triggered human-breath formula is Winsen-only; SGX always uses its gas calibration.
+        bool useBreathCalibration = isLegacyWinsen && deltaT > BreathCalibrationTempThresholdC;
         double estimatedPpm;
         bool usedGenericGasCalibration = false;
         if (useBreathCalibration)
@@ -339,10 +375,23 @@ public sealed class XHaleEngine : IXHaleEngine
             if (TryGetGasCalibrationForDevice(deviceSerial, out var calibration))
             {
                 usedGenericGasCalibration = calibration == GenericDeviceGasCalibration;
+                if (!XHSensorProfiles.AllowsWinsenFallbackConstants(sensorProfile)
+                    && !HasDeviceSpecificGasCalibration(deviceSerial))
+                {
+                    return BlockedResult(profileResolution,
+                        $"{XHSensorProfiles.DisplayName(sensorProfile)} device has no calibration (firmware, injected, or bundled). Calibrate it before measuring.")
+                        with { MissingGasCalibration = true };
+                }
                 if (TryFitGasPpm(coRaw, samplePeriodSec, calibration, out double gasPpm, out double fitDuration))
                 {
                     duration = fitDuration;
                     estimatedPpm = QuantizeGasPpm(Math.Max(0, gasPpm));
+                }
+                else if (!XHSensorProfiles.AllowsWinsenFallbackConstants(sensorProfile))
+                {
+                    // Legacy free-fit coefficients are Winsen-specific; never apply them to SGX.
+                    return BlockedResult(profileResolution,
+                        $"Could not fit the CO response for this {XHSensorProfiles.DisplayName(sensorProfile)} sample. Please repeat the measurement.");
                 }
                 else
                 {
@@ -367,7 +416,20 @@ public sealed class XHaleEngine : IXHaleEngine
 
         return new XHBreathResult(estimatedPpm, duration, shortDuration, smallTempRise)
         {
-            UsedGenericGasCalibration = usedGenericGasCalibration
+            UsedGenericGasCalibration = usedGenericGasCalibration,
+            SensorProfile = XHSensorProfiles.Tag(sensorProfile),
+            SensorProfileSource = profileResolution.Source,
+        };
+    }
+
+    private static XHBreathResult BlockedResult(XHSensorProfileResolution resolution, string reason)
+    {
+        return new XHBreathResult(0, 0, true, true)
+        {
+            SensorProfile = resolution.Profile is { } p ? XHSensorProfiles.Tag(p) : "unsupported",
+            SensorProfileSource = resolution.Source,
+            PredictionBlocked = true,
+            PredictionBlockedReason = reason,
         };
     }
 
@@ -488,6 +550,22 @@ public sealed class XHaleEngine : IXHaleEngine
         if (coBytes == null) throw new ArgumentNullException(nameof(coBytes));
         if (temperatureBytes == null) throw new ArgumentNullException(nameof(temperatureBytes));
 
+        // Profile gating: SGX never uses the Winsen human-breath branch or Winsen fallback constants.
+        XHSensorProfileResolution profileResolution = GetSensorProfile();
+        if (profileResolution.Profile is not { } sensorProfile)
+        {
+            throw new InvalidOperationException($"Device not supported by this SDK version: {profileResolution.UnsupportedReason}.");
+        }
+        if (sensorProfile == XHSensorProfile.EfrSgx && !XHSensorProfiles.EfrSgxPredictionEnabled)
+        {
+            throw new InvalidOperationException("EFR + SGX CO prediction is not enabled yet in this SDK version.");
+        }
+        bool isLegacyWinsen = XHSensorProfiles.AllowsLegacyHumanBreathBranch(sensorProfile);
+        if (!isLegacyWinsen && !HasDeviceSpecificGasCalibration(deviceSerial: null))
+        {
+            throw new InvalidOperationException($"{XHSensorProfiles.DisplayName(sensorProfile)} device has no calibration (firmware, injected, or bundled).");
+        }
+
         uint coRaw = DecodeCoRawFromBytes(coBytes, bigEndian);
         double tempC = DecodeTemperatureC(temperatureBytes);
 
@@ -495,7 +573,7 @@ public sealed class XHaleEngine : IXHaleEngine
         double deltaT = tempC - _baselineExplicitTempC.Value;
         double compensatedDeltaR = deltaR - (TemperatureCompensationRawPerC * deltaT);
 
-        bool useBreathCalibration = deltaT > BreathCalibrationTempThresholdC;
+        bool useBreathCalibration = isLegacyWinsen && deltaT > BreathCalibrationTempThresholdC;
         if (!useBreathCalibration)
         {
             if (!TryGetGasCalibrationForDevice(deviceSerial: null, out var calibration))
@@ -759,6 +837,16 @@ public sealed class XHaleEngine : IXHaleEngine
         }
         calibration = GenericDeviceGasCalibration;
         return true;
+    }
+
+    // True when firmware, injected, or bundled per-device constants exist (i.e. not the generic Winsen fallback).
+    private bool HasDeviceSpecificGasCalibration(string? deviceSerial)
+    {
+        if (_firmwareDeviceGasCalibration.HasValue) return true;
+        string? serialPrefix = NormalizeSerialPrefix(deviceSerial) ?? _deviceSerialPrefix;
+        if (serialPrefix == null) return false;
+        return _injectedDeviceGasCalibrations.ContainsKey(serialPrefix)
+            || DefaultDeviceGasCalibrations.ContainsKey(serialPrefix);
     }
 
     private static double ReadSingleLittleEndian(ReadOnlySpan<byte> record, int offset)
