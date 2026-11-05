@@ -106,6 +106,17 @@ public static class XHSensorProfiles
     /// <param name="modelNumber">Value read from 0x2A24, or null if the device has no Model Number.</param>
     /// <param name="serialPrefix8">Normalized 8-character serial prefix, if known.</param>
     public static XHSensorProfileResolution Resolve(string? modelNumber, string? serialPrefix8)
+        => Resolve(modelNumber, serialPrefix8, modelNumberLookupFailed: false);
+
+    /// <summary>
+    /// Resolves the processing profile, distinguishing a Model Number that is confirmed absent from one
+    /// whose BLE read failed. A failed lookup is NOT treated as "absent" (that would give a new SGX device
+    /// Winsen processing): it is unsupported, except for the known SGX prototype serials.
+    /// </summary>
+    /// <param name="modelNumber">Value read from 0x2A24, or null if absent or not read.</param>
+    /// <param name="serialPrefix8">Normalized 8-character serial prefix, if known.</param>
+    /// <param name="modelNumberLookupFailed">True when 0x2A24 exists (or may exist) but discovery/read failed.</param>
+    public static XHSensorProfileResolution Resolve(string? modelNumber, string? serialPrefix8, bool modelNumberLookupFailed)
     {
         string? model = NormalizeModelNumber(modelNumber);
         if (model != null)
@@ -126,6 +137,11 @@ public static class XHSensorProfiles
         if (prefix != null && KnownLegacySgxSerialPrefixes.Contains(prefix))
         {
             return new XHSensorProfileResolution(XHSensorProfile.NrfSgx, "known_sgx_serial", null, null);
+        }
+        if (modelNumberLookupFailed)
+        {
+            return new XHSensorProfileResolution(null, "unsupported", null,
+                "device model could not be read; reconnect and try again");
         }
         return new XHSensorProfileResolution(XHSensorProfile.NrfMe3, "legacy_no_model_number", null, null);
     }

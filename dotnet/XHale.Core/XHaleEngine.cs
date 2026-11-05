@@ -10,6 +10,8 @@ public sealed class XHaleEngine : IXHaleEngine
     private string? _licenseKey;
     private string? _deviceSerialPrefix;
     private string? _modelNumber;
+    // True when the host reported that reading DIS Model Number (0x2A24) failed (not "absent").
+    private bool _modelNumberLookupFailed;
     private DeviceGasCalibration? _firmwareDeviceGasCalibration;
     private readonly Dictionary<string, DeviceGasCalibration> _injectedDeviceGasCalibrations = new(StringComparer.Ordinal);
 
@@ -124,6 +126,7 @@ public sealed class XHaleEngine : IXHaleEngine
             if (_deviceSerialPrefix != null)
             {
                 _modelNumber = null;
+                _modelNumberLookupFailed = false;
                 // Firmware CAL_READ constants belong to the device they were read from.
                 _firmwareDeviceGasCalibration = null;
             }
@@ -132,6 +135,15 @@ public sealed class XHaleEngine : IXHaleEngine
     }
 
     public void SetDeviceIdentity(string? serial, string? modelNumber)
+        => SetDeviceIdentity(serial, modelNumber, modelNumberLookupFailed: false);
+
+    /// <summary>
+    /// Sets the connected device's identity. Pass <paramref name="modelNumber"/> = null only when the device has
+    /// no Model Number characteristic (legacy Winsen firmware). If 0x2A24 exists but its read failed, pass
+    /// <paramref name="modelNumberLookupFailed"/> = true: the SDK then blocks prediction instead of assuming Winsen
+    /// (known SGX prototype serials still resolve to SGX).
+    /// </summary>
+    public void SetDeviceIdentity(string? serial, string? modelNumber, bool modelNumberLookupFailed)
     {
         string? prefix = NormalizeSerialPrefix(serial);
         // Switching away from a known device drops its firmware calibration. When no device was set yet,
@@ -142,6 +154,7 @@ public sealed class XHaleEngine : IXHaleEngine
         }
         _deviceSerialPrefix = prefix;
         _modelNumber = XHSensorProfiles.NormalizeModelNumber(modelNumber);
+        _modelNumberLookupFailed = _modelNumber == null && modelNumberLookupFailed;
     }
 
     /// <summary>Call on disconnect. Forgets serial, Model Number and the device's firmware calibration.</summary>
@@ -149,17 +162,29 @@ public sealed class XHaleEngine : IXHaleEngine
     {
         _deviceSerialPrefix = null;
         _modelNumber = null;
+        _modelNumberLookupFailed = false;
         _firmwareDeviceGasCalibration = null;
     }
 
     public void SetModelNumber(string? modelNumber)
     {
         _modelNumber = XHSensorProfiles.NormalizeModelNumber(modelNumber);
+        if (_modelNumber != null) _modelNumberLookupFailed = false;
+    }
+
+    /// <summary>
+    /// Reports that the device's Model Number (0x2A24) could not be read. Do not call this when the characteristic
+    /// is simply absent (legacy Winsen); in that case leave the Model Number null.
+    /// </summary>
+    public void SetModelNumberLookupFailed()
+    {
+        _modelNumber = null;
+        _modelNumberLookupFailed = true;
     }
 
     public XHSensorProfileResolution GetSensorProfile(string? deviceSerial = null)
     {
-        return XHSensorProfiles.Resolve(_modelNumber, NormalizeSerialPrefix(deviceSerial) ?? _deviceSerialPrefix);
+        return XHSensorProfiles.Resolve(_modelNumber, NormalizeSerialPrefix(deviceSerial) ?? _deviceSerialPrefix, _modelNumberLookupFailed);
     }
 
     public bool TrySetFirmwareGasCalibrationRecord(byte[] calibrationRecord)
@@ -278,7 +303,8 @@ public sealed class XHaleEngine : IXHaleEngine
 
     public void FeedSample(double coRaw, double temperatureC, double humidityPct, DateTimeOffset timestamp)
     {
-        double ts = timestamp.ToUnixTimeSeconds();
+        // Millisecond precision: whole seconds would collapse sub-second sample spacing.
+        double ts = timestamp.ToUnixTimeMilliseconds() / 1000.0;
         _samples.Add(new Sample(coRaw, temperatureC, humidityPct, ts));
         if (_samples.Count > MaxSamples)
         {
@@ -343,8 +369,9 @@ public sealed class XHaleEngine : IXHaleEngine
         XHSensorProfileResolution profileResolution = GetSensorProfile(deviceSerial);
         if (profileResolution.Profile is not { } sensorProfile)
         {
-            return BlockedResult(profileResolution,
-                $"This device is not supported by this SDK version: {profileResolution.UnsupportedReason}. Please update the SDK.");
+            return BlockedResult(profileResolution, _modelNumberLookupFailed && profileResolution.ModelNumber == null
+                ? "Could not identify this device model, so no CO value is produced. Reconnect the device and try again."
+                : $"This device is not supported by this SDK version: {profileResolution.UnsupportedReason}. Please update the SDK.");
         }
         if (sensorProfile == XHSensorProfile.EfrSgx && !XHSensorProfiles.EfrSgxPredictionEnabled)
         {
@@ -353,27 +380,58 @@ public sealed class XHaleEngine : IXHaleEngine
         }
         bool isLegacyWinsen = XHSensorProfiles.AllowsLegacyHumanBreathBranch(sensorProfile);
 
-        int warmupSampleCount = ComputeSampleCountForSeconds(WarmupDurationSec, samplePeriodSec, n);
-        double warmupCoBaseline = Mean(coRaw, 0, warmupSampleCount);
-        double warmupTempBaseline = Mean(temperatureC, 0, warmupSampleCount);
-
-        int breathStartIdx = FindBreathStartIndex(temperatureC, warmupTempBaseline);
-        double tBasePre = breathStartIdx > 0
-            ? Mean(temperatureC, 0, breathStartIdx)
-            : warmupTempBaseline;
-
+        // Two input conventions:
+        //  - Sample-only (a baseline was set with SetBaseline*/SetBaselineFromBytes after warmup, and the arrays hold
+        //    only the breath sample): identical to the iOS app's analyzeCurrentBreath().
+        //  - Legacy (no baseline set): the first 20 s of the arrays are treated as warmup.
+        bool sampleOnly = _baselineExplicitCoRaw.HasValue;
+        int breathStartIdx;
+        double tBasePre;
         double rBasePre;
-        if (breathStartIdx >= 5)
+        if (sampleOnly)
         {
-            rBasePre = TrimmedMean(coRaw, 0, breathStartIdx);
-        }
-        else if (warmupSampleCount > 0)
-        {
-            rBasePre = warmupCoBaseline;
+            // App: breath start = first temperature >= mean(first 10 temps) + 0.8 C, else the sample start.
+            double t0Initial = Mean(temperatureC, 0, Math.Min(10, n));
+            breathStartIdx = FindBreathStartIndex(temperatureC, t0Initial);
+            int preCount = breathStartIdx;
+            tBasePre = preCount >= 5 ? Mean(temperatureC, 0, preCount) : t0Initial;
+            if (preCount >= 5)
+            {
+                rBasePre = AppTrimmedMean(coRaw, 0, preCount);
+            }
+            else if (preCount >= 2)
+            {
+                rBasePre = Mean(coRaw, 0, 2);
+            }
+            else
+            {
+                // Fewer than 2 pre-breath samples: the baseline captured at the end of warmup.
+                rBasePre = _baselineExplicitCoRaw!.Value;
+            }
         }
         else
         {
-            rBasePre = coRaw[0];
+            int warmupSampleCount = ComputeSampleCountForSeconds(WarmupDurationSec, samplePeriodSec, n);
+            double warmupCoBaseline = Mean(coRaw, 0, warmupSampleCount);
+            double warmupTempBaseline = Mean(temperatureC, 0, warmupSampleCount);
+
+            breathStartIdx = FindBreathStartIndex(temperatureC, warmupTempBaseline);
+            tBasePre = breathStartIdx > 0
+                ? Mean(temperatureC, 0, breathStartIdx)
+                : warmupTempBaseline;
+
+            if (breathStartIdx >= 5)
+            {
+                rBasePre = TrimmedMean(coRaw, 0, breathStartIdx);
+            }
+            else if (warmupSampleCount > 0)
+            {
+                rBasePre = warmupCoBaseline;
+            }
+            else
+            {
+                rBasePre = coRaw[0];
+            }
         }
 
         int peakIdx = breathStartIdx;
@@ -387,7 +445,12 @@ public sealed class XHaleEngine : IXHaleEngine
             }
         }
 
-        double duration = Math.Max(0, (peakIdx - breathStartIdx) * samplePeriodSec);
+        // App: breath duration runs from breath start to the last sample; legacy: breath start to peak.
+        double duration = sampleOnly
+            ? Math.Max(0, (n - 1 - breathStartIdx) * samplePeriodSec)
+            : Math.Max(0, (peakIdx - breathStartIdx) * samplePeriodSec);
+        // App keys the duration-bucket fallback by the configured sample length.
+        double fallbackEvalSeconds = sampleOnly ? n * samplePeriodSec : duration;
         double rPeak = peakVal;
         double tPeak = temperatureC[peakIdx];
         double deltaT = tPeak - tBasePre;
@@ -426,7 +489,7 @@ public sealed class XHaleEngine : IXHaleEngine
                 }
                 if (TryFitGasPpm(coRaw, samplePeriodSec, calibration, out double gasPpm, out double fitDuration))
                 {
-                    duration = fitDuration;
+                    if (!sampleOnly) duration = fitDuration;
                     estimatedPpm = QuantizeGasPpm(Math.Max(0, gasPpm));
                 }
                 else if (!XHSensorProfiles.AllowsWinsenFallbackConstants(sensorProfile))
@@ -442,7 +505,7 @@ public sealed class XHaleEngine : IXHaleEngine
                     double deltaRComp = (rPeak - rBasePre)
                         - (TemperatureCompensationRawPerC * deltaT)
                         - (VoltageCompensationRawPerV * deltaV);
-                    var gasCoefficients = GasCalibrationCoefficients(duration);
+                    var gasCoefficients = GasCalibrationCoefficients(fallbackEvalSeconds);
                     double fallbackPpm = Math.Max(0, (deltaRComp - gasCoefficients.Intercept) / gasCoefficients.Slope);
                     estimatedPpm = QuantizeGasPpm(fallbackPpm);
                 }
@@ -731,6 +794,20 @@ public sealed class XHaleEngine : IXHaleEngine
             sum += tmp[i];
             used++;
         }
+        return sum / used;
+    }
+
+    // Same as the iOS app's trimmedMeanOf: drop floor(n * 10%) values at each end (possibly none).
+    private static double AppTrimmedMean(double[] values, int start, int count)
+    {
+        double[] tmp = new double[count];
+        Array.Copy(values, start, tmp, 0, count);
+        Array.Sort(tmp);
+        int k = Math.Max(0, Math.Min(count / 2, (int)(count * TrimFraction)));
+        int used = count - 2 * k;
+        if (used <= 0) return tmp[count / 2];
+        double sum = 0;
+        for (int i = k; i < count - k; i++) sum += tmp[i];
         return sum / used;
     }
 

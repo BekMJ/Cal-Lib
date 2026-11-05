@@ -137,5 +137,51 @@ Check(e13d.AnalyzeBreath(co, tFlat, 1.0).EstimatedPPM == 10.0, "calibration befo
 e13d.SetDeviceIdentity("CCCCCCCC", "XHale-NRF-SGX");
 Check(e13d.AnalyzeBreath(co, tFlat, 1.0).EstimatedPPM == 10.0, "same identity keeps calibration");
 
+// 14. Model Number lookup failed is NOT "absent"
+var e14 = new XHaleEngine(); e14.Initialize("k");
+e14.SetDeviceIdentity("99999999", null, modelNumberLookupFailed: true);
+var r14 = e14.AnalyzeBreath(co, tWarm, 1.0);
+Check(r14.PredictionBlocked && r14.SensorProfile == "unsupported" && r14.EstimatedPPM == 0, "failed lookup on unknown serial is blocked, not winsen");
+Check(r14.PredictionBlockedReason!.Contains("Reconnect"), "failed lookup reason asks to reconnect");
+e14.SetDeviceIdentity("D0F18121", null, modelNumberLookupFailed: true);
+Check(e14.GetSensorProfile().Profile == XHSensorProfile.NrfSgx, "failed lookup keeps known sgx serial");
+e14.SetDeviceIdentity("99999999", "XHale-NRF-SGX", modelNumberLookupFailed: true);
+Check(e14.GetSensorProfile().Profile == XHSensorProfile.NrfSgx, "a read model number overrides the failed flag");
+e14.SetDeviceIdentity("99999999", null);
+Check(e14.GetSensorProfile().Profile == XHSensorProfile.NrfMe3, "2-arg identity with null model is confirmed absent (winsen)");
+var e14b = New("99999999", null); e14b.SetModelNumberLookupFailed();
+Check(e14b.GetSensorProfile().Profile == null, "SetModelNumberLookupFailed blocks unknown serial");
+e14b.ClearDeviceIdentity(); e14b.SetDeviceSerial("99999999");
+Check(e14b.GetSensorProfile().Profile == XHSensorProfile.NrfMe3, "ClearDeviceIdentity clears failed flag");
+
+// 15. Sample-only input (baseline set after warmup, arrays hold just the breath sample) matches the iOS app
+//     20 samples at 1 Hz: 7 flat samples (22 C, 30000 raw), then temperature +1 C/s up to 30 C and CO rising to +2000.
+int ns = 20; var coS = new double[ns]; var tS = new double[ns];
+for (int i = 0; i < ns; i++)
+{
+    tS[i] = i < 7 ? 22.0 : Math.Min(30.0, 22.0 + (i - 6));
+    coS[i] = i < 7 ? 30000 : 30000 + 2000.0 * (i - 6) / (ns - 7);
+}
+// App: T0 = mean(first 10) = 22.6 -> breath start at first temp >= 23.4 (index 8, 24 C); 8 pre-breath samples.
+double tBaseApp = (7 * 22.0 + 23.0) / 8.0;
+double rBaseApp = (7 * 30000 + coS[7]) / 8.0;   // 8 < 10 samples: app trims none
+double expectedApp = Math.Max(0, ((coS[ns - 1] - rBaseApp) - 17.30 * (30.0 - tBaseApp) - 63.20735653235655) / 11.558260683760434);
+var e15 = New("12345678", null); e15.SetBaseline(30000, 22.0);
+var r15 = e15.AnalyzeBreath(coS, tS, 1.0);
+Check(Math.Abs(r15.EstimatedPPM - expectedApp) < 1e-9, $"sample-only winsen breath matches app (got {r15.EstimatedPPM}, want {expectedApp})");
+Check(Math.Abs(r15.DurationSec - (ns - 1 - 8)) < 1e-9, $"sample-only duration = breath start to last sample (got {r15.DurationSec})");
+var r15legacy = New("12345678", null).AnalyzeBreath(coS, tS, 1.0);
+Check(r15legacy.EstimatedPPM != r15.EstimatedPPM, $"legacy warmup-window mode differs on a sample-only array (legacy {r15legacy.EstimatedPPM})");
+// SGX gas path is unaffected by the baseline mode (the fit anchors on the first two samples)
+var e15s = New("A793BAFC11112222", "XHale-NRF-SGX"); e15s.SetBaseline(30000, 22.0);
+Check(e15s.AnalyzeBreath(co, tWarm, 1.0).EstimatedPPM == 10.0, "sample-only sgx gas fit unchanged");
+
+// 16. FeedSample keeps sub-second timestamps (100 ms spacing -> 0.1 s period, same as the array API)
+var e16 = New("12345678", null); var e16a = New("12345678", null);
+var t0f = DateTimeOffset.FromUnixTimeMilliseconds(1_700_000_000_000);
+for (int i = 0; i < ns; i++) e16.FeedSample(coS[i], tS[i], 50, t0f.AddMilliseconds(100 * i));
+var r16 = e16.AnalyzeBreath(); var r16a = e16a.AnalyzeBreath(coS, tS, 0.1);
+Check(Math.Abs(r16.EstimatedPPM - r16a.EstimatedPPM) < 1e-6 && Math.Abs(r16.DurationSec - r16a.DurationSec) < 1e-4, $"FeedSample uses 0.1 s period (got {r16.DurationSec} s vs {r16a.DurationSec} s)");
+
 Console.WriteLine($"{pass} passed, {fail} failed");
 return fail == 0 ? 0 : 1;

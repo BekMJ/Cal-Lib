@@ -108,10 +108,21 @@ The SDK supports three device profiles, selected from the BLE Device Information
 
 Host app responsibilities:
 
-1. Read 0x2A24 after service discovery. If the characteristic does not exist, pass `null`.
-2. Prefer `SetDeviceIdentity(serial, modelNumber)` once both DIS reads are done, and `ClearDeviceIdentity()` on disconnect. The separate `SetDeviceSerial(...)` / `SetModelNumber(...)` calls also work in either order on a fresh connection; switching from one serial to another clears the previous device's Model Number.
-3. Check `XHBreathResult.PredictionBlocked`. When it is `true`, `EstimatedPPM` is 0 and **must not be shown as a reading**; show `PredictionBlockedReason` instead.
-4. `DecodeCoPpmFromBytes(...)` throws `InvalidOperationException` for unsupported devices, EFR + SGX, and SGX devices without calibration. Call `GetSensorProfile()` first if you need to avoid the exception.
+1. Read 0x2A24 after service discovery. Distinguish three outcomes:
+   - **Characteristic does not exist** (legacy Winsen firmware): pass `null` as the Model Number.
+   - **Read succeeded**: pass the string.
+   - **Discovery or read failed** (BLE error/exception): call `SetDeviceIdentity(serial, null, modelNumberLookupFailed: true)` (or `SetModelNumberLookupFailed()`). Never pass `null` for a failed read: `null` means "no Model Number", which selects Winsen and would process a new SGX device with the Winsen formula. A failed lookup blocks prediction ("reconnect and try again"), except for the known SGX prototype serials.
+2. Prefer `SetDeviceIdentity(serial, modelNumber[, modelNumberLookupFailed])` once both DIS reads are done, and `ClearDeviceIdentity()` on disconnect (it also clears the firmware calibration). The separate `SetDeviceSerial(...)` / `SetModelNumber(...)` calls also work in either order on a fresh connection; switching from one serial to another clears the previous device's Model Number and firmware calibration.
+3. Check `XHBreathResult.PredictionBlocked`. When it is `true`, `EstimatedPPM` is 0 and **must not be shown as a reading**; show `PredictionBlockedReason` instead. Optionally flag readings with `UsedSgxFallbackCalibration = true` as "device not calibrated".
+4. `DecodeCoPpmFromBytes(...)` throws `InvalidOperationException` for unsupported devices and EFR + SGX. Call `GetSensorProfile()` first if you need to avoid the exception.
+
+### Breath input: sample-only (recommended, matches the iOS app)
+
+Wait 20 s after connecting (sensor warmup), call `SetBaseline(...)` / `SetBaselineFromBytes(...)` with the current CO and temperature, then collect **only the breath sample** (e.g. 20 s) and pass those arrays to `AnalyzeBreath(...)`. With a baseline set, `AnalyzeBreath` treats the arrays as the sample only and uses the iOS app's logic exactly: breath start at the first temperature ≥ mean(first 10 temperatures) + 0.8 °C; pre-breath CO = trimmed mean (≥ 5 samples), else mean of the first 2, else the baseline you set; duration = breath start to last sample; the Winsen duration-bucket fallback uses the sample length.
+
+Without a baseline (legacy), the first 20 s of the arrays are treated as warmup, so the arrays must contain warmup + sample. Passing only a breath sample in legacy mode makes the breath-start threshold and CO baseline come from the breath itself.
+
+`FeedSample(...)` timestamps keep millisecond precision, so `AnalyzeBreath()` derives the real sample period for sub-second sampling.
 
 SGX devices should have device-specific constants: firmware CAL_READ, `SetPerDeviceGasCalibration(...)`, or the bundled table (A793BAFC and D0F18121 are bundled with drift 0, tau 1 s, dead 0). An nRF + SGX device without any of these uses the nRF-SGX fallback gain `XHSensorProfiles.NrfSgxFallbackGainRawPerPpm` (317.55 raw/ppm, the mean of those two app-matched gains; drift 0, tau 1 s, dead 0) and reports `UsedSgxFallbackCalibration = true`; it never uses the Winsen generic profile. EFR + SGX has no fallback. Breath results now also report `SensorProfile` (`nrf_me3`, `nrf_sgx`, `efr_sgx`, `unsupported`) and `SensorProfileSource`.
 
