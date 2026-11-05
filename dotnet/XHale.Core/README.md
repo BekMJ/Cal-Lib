@@ -146,7 +146,7 @@ Calibration‑gas path (ΔT ≤ 2 °C):
    - Find first index where slope ≥ 0.1 raw/s and ΔCO ≥ 1.0 raw.
    - If not found, t_start = 0 s.
 6. Exponential fit over 20 s window starting at t_start:
-   - Firmware CAL_READ calibration, if provided through `TrySetFirmwareGasCalibrationRecord(...)`, wins first.
+   - Firmware CAL_READ calibration, if provided through `TrySetFirmwareGasCalibrationRecord(...)`, wins first. It belongs to the device it was read from: `ClearDeviceIdentity()` (call it on disconnect) and switching `SetDeviceIdentity(...)` / `SetDeviceSerial(...)` to a different serial discard it, so a failed CAL_READ on the next device can never reuse the previous device's constants.
    - For known device serial prefixes (first 8 alphanumeric chars, uppercased), the SDK uses injected constants or the bundled per-device table.
    - The host app can inject newer Firestore values with `SetPerDeviceGasCalibration(...)`.
    - Unknown or unset serials with no firmware/injected/table calibration use the SDK's median generic gas profile.

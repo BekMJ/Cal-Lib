@@ -102,5 +102,29 @@ Check(e11.GetSensorProfile().Profile == XHSensorProfile.NrfMe3, "identity replac
 // 12. Blocked results do not raise breath-quality flags
 Check(!r6.ShortDuration && !r6.SmallTemperatureRise, "blocked result quality flags false");
 
+// 13. Firmware calibration must not leak to the next device (B's CAL_READ fails, so none is set)
+var fwCal = new XHDeviceGasCalibration(0, 327.436077, 1, 0);
+var e13 = new XHaleEngine(); e13.Initialize("k");
+e13.SetDeviceIdentity("AAAAAAAA", "XHale-NRF-SGX"); e13.SetFirmwareGasCalibration(fwCal);
+Check(e13.AnalyzeBreath(co, tFlat, 1.0).EstimatedPPM == 10.0, "device A uses its firmware calibration");
+e13.ClearDeviceIdentity(); e13.SetDeviceIdentity("BBBBBBBB", "XHale-NRF-SGX");
+var r13 = e13.AnalyzeBreath(co, tFlat, 1.0);
+Check(r13.PredictionBlocked && r13.MissingGasCalibration && r13.EstimatedPPM == 0, "clear + new identity drops A's firmware calibration");
+// Switching identity directly (no Clear) also drops it
+var e13b = new XHaleEngine(); e13b.Initialize("k");
+e13b.SetDeviceIdentity("AAAAAAAA", "XHale-NRF-SGX"); e13b.SetFirmwareGasCalibration(fwCal);
+e13b.SetDeviceIdentity("BBBBBBBB", "XHale-NRF-SGX");
+Check(e13b.AnalyzeBreath(co, tFlat, 1.0).PredictionBlocked, "direct identity switch drops firmware calibration");
+// Serial-only API path
+var e13c = New("AAAAAAAA", "XHale-NRF-SGX"); e13c.SetFirmwareGasCalibration(fwCal);
+e13c.SetDeviceSerial("BBBBBBBB"); e13c.SetModelNumber("XHale-NRF-SGX");
+Check(e13c.AnalyzeBreath(co, tFlat, 1.0).PredictionBlocked, "serial switch drops firmware calibration");
+// Same device re-identified keeps it; calibration read before identity belongs to the incoming device
+var e13d = new XHaleEngine(); e13d.Initialize("k");
+e13d.SetFirmwareGasCalibration(fwCal); e13d.SetDeviceIdentity("CCCCCCCC", "XHale-NRF-SGX");
+Check(e13d.AnalyzeBreath(co, tFlat, 1.0).EstimatedPPM == 10.0, "calibration before identity is kept");
+e13d.SetDeviceIdentity("CCCCCCCC", "XHale-NRF-SGX");
+Check(e13d.AnalyzeBreath(co, tFlat, 1.0).EstimatedPPM == 10.0, "same identity keeps calibration");
+
 Console.WriteLine($"{pass} passed, {fail} failed");
 return fail == 0 ? 0 : 1;

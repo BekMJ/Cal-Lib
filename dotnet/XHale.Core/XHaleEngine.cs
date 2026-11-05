@@ -118,6 +118,8 @@ public sealed class XHaleEngine : IXHaleEngine
             if (_deviceSerialPrefix != null)
             {
                 _modelNumber = null;
+                // Firmware CAL_READ constants belong to the device they were read from.
+                _firmwareDeviceGasCalibration = null;
             }
         }
         _deviceSerialPrefix = prefix;
@@ -125,14 +127,23 @@ public sealed class XHaleEngine : IXHaleEngine
 
     public void SetDeviceIdentity(string? serial, string? modelNumber)
     {
-        _deviceSerialPrefix = NormalizeSerialPrefix(serial);
+        string? prefix = NormalizeSerialPrefix(serial);
+        // Switching away from a known device drops its firmware calibration. When no device was set yet,
+        // a firmware calibration supplied first belongs to the incoming device and is kept.
+        if (_deviceSerialPrefix != null && !string.Equals(prefix, _deviceSerialPrefix, StringComparison.Ordinal))
+        {
+            _firmwareDeviceGasCalibration = null;
+        }
+        _deviceSerialPrefix = prefix;
         _modelNumber = XHSensorProfiles.NormalizeModelNumber(modelNumber);
     }
 
+    /// <summary>Call on disconnect. Forgets serial, Model Number and the device's firmware calibration.</summary>
     public void ClearDeviceIdentity()
     {
         _deviceSerialPrefix = null;
         _modelNumber = null;
+        _firmwareDeviceGasCalibration = null;
     }
 
     public void SetModelNumber(string? modelNumber)
@@ -834,9 +845,20 @@ public sealed class XHaleEngine : IXHaleEngine
         };
     }
 
+    // Firmware CAL_READ constants describe the currently identified device only. A call that names a
+    // different device explicitly must not pick them up.
+    private bool FirmwareCalibrationAppliesTo(string? deviceSerial)
+    {
+        if (!_firmwareDeviceGasCalibration.HasValue) return false;
+        string? requested = NormalizeSerialPrefix(deviceSerial);
+        return requested == null
+            || _deviceSerialPrefix == null
+            || string.Equals(requested, _deviceSerialPrefix, StringComparison.Ordinal);
+    }
+
     private bool TryGetGasCalibrationForDevice(string? deviceSerial, out DeviceGasCalibration calibration)
     {
-        if (_firmwareDeviceGasCalibration is { } firmwareCalibration)
+        if (FirmwareCalibrationAppliesTo(deviceSerial) && _firmwareDeviceGasCalibration is { } firmwareCalibration)
         {
             calibration = firmwareCalibration;
             return true;
@@ -860,7 +882,7 @@ public sealed class XHaleEngine : IXHaleEngine
     // True when firmware, injected, or bundled per-device constants exist (i.e. not the generic Winsen fallback).
     private bool HasDeviceSpecificGasCalibration(string? deviceSerial)
     {
-        if (_firmwareDeviceGasCalibration.HasValue) return true;
+        if (FirmwareCalibrationAppliesTo(deviceSerial)) return true;
         string? serialPrefix = NormalizeSerialPrefix(deviceSerial) ?? _deviceSerialPrefix;
         if (serialPrefix == null) return false;
         return _injectedDeviceGasCalibrations.ContainsKey(serialPrefix)
