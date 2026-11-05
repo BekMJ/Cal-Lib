@@ -80,6 +80,15 @@ public static class XHSensorProfiles
     /// <summary>Only the legacy Winsen profile may fall back to Winsen generic constants or the legacy free-fit coefficients.</summary>
     public static bool AllowsWinsenFallbackConstants(XHSensorProfile profile) => profile == XHSensorProfile.NrfMe3;
 
+    /// <summary>nRF + SGX may use the SGX fallback gain when no device calibration exists. EFR + SGX may not.</summary>
+    public static bool AllowsSgxFallbackCalibration(XHSensorProfile profile) => profile == XHSensorProfile.NrfSgx;
+
+    /// <summary>
+    /// nRF + SGX fallback gain (raw counts per ppm): mean of the two app-matched nRF-SGX fits provisioned 2026-10-09
+    /// (A793BAFC 327.436077, D0F18121 307.666794). Used with drift 0, tau 1 s, dead time 0.
+    /// </summary>
+    public const double NrfSgxFallbackGainRawPerPpm = (327.436077 + 307.666794) / 2.0;
+
     /// <summary>Strips NUL terminators and surrounding whitespace; returns null when nothing is left.</summary>
     public static string? NormalizeModelNumber(string? raw)
     {

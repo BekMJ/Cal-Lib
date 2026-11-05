@@ -113,7 +113,7 @@ Host app responsibilities:
 3. Check `XHBreathResult.PredictionBlocked`. When it is `true`, `EstimatedPPM` is 0 and **must not be shown as a reading**; show `PredictionBlockedReason` instead.
 4. `DecodeCoPpmFromBytes(...)` throws `InvalidOperationException` for unsupported devices, EFR + SGX, and SGX devices without calibration. Call `GetSensorProfile()` first if you need to avoid the exception.
 
-SGX devices need device-specific constants: firmware CAL_READ, `SetPerDeviceGasCalibration(...)`, or the bundled table (A793BAFC and D0F18121 are bundled with drift 0, tau 1 s, dead 0). Breath results now also report `SensorProfile` (`nrf_me3`, `nrf_sgx`, `efr_sgx`, `unsupported`) and `SensorProfileSource`.
+SGX devices should have device-specific constants: firmware CAL_READ, `SetPerDeviceGasCalibration(...)`, or the bundled table (A793BAFC and D0F18121 are bundled with drift 0, tau 1 s, dead 0). An nRF + SGX device without any of these uses the nRF-SGX fallback gain `XHSensorProfiles.NrfSgxFallbackGainRawPerPpm` (317.55 raw/ppm, the mean of those two app-matched gains; drift 0, tau 1 s, dead 0) and reports `UsedSgxFallbackCalibration = true`; it never uses the Winsen generic profile. EFR + SGX has no fallback. Breath results now also report `SensorProfile` (`nrf_me3`, `nrf_sgx`, `efr_sgx`, `unsupported`) and `SensorProfileSource`.
 
 ## Calibration (current)
 

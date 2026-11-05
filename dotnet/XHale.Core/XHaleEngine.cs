@@ -60,6 +60,12 @@ public sealed class XHaleEngine : IXHaleEngine
         26.115734843177872,
         1.669570638561888,
         5.0);
+    // nRF + SGX fallback when an SGX device has no firmware, injected, or bundled calibration.
+    private static readonly DeviceGasCalibration NrfSgxFallbackGasCalibration = new(
+        0.0,
+        XHSensorProfiles.NrfSgxFallbackGainRawPerPpm,
+        1.0,
+        0.0);
     private static readonly Dictionary<string, DeviceGasCalibration> DefaultDeviceGasCalibrations = new(StringComparer.Ordinal)
     {
         ["089D110A"] = new DeviceGasCalibration(-6.201368523949169, 25.272945436392902, 0.5, 6.0),
@@ -390,6 +396,7 @@ public sealed class XHaleEngine : IXHaleEngine
         bool useBreathCalibration = isLegacyWinsen && deltaT > BreathCalibrationTempThresholdC;
         double estimatedPpm;
         bool usedGenericGasCalibration = false;
+        bool usedSgxFallbackCalibration = false;
         if (useBreathCalibration)
         {
             double deltaV = 0.0;
@@ -406,9 +413,16 @@ public sealed class XHaleEngine : IXHaleEngine
                 if (!XHSensorProfiles.AllowsWinsenFallbackConstants(sensorProfile)
                     && !HasDeviceSpecificGasCalibration(deviceSerial))
                 {
-                    return BlockedResult(profileResolution,
-                        $"{XHSensorProfiles.DisplayName(sensorProfile)} device has no calibration (firmware, injected, or bundled). Calibrate it before measuring.")
-                        with { MissingGasCalibration = true };
+                    if (!XHSensorProfiles.AllowsSgxFallbackCalibration(sensorProfile))
+                    {
+                        return BlockedResult(profileResolution,
+                            $"{XHSensorProfiles.DisplayName(sensorProfile)} device has no calibration (firmware, injected, or bundled). Calibrate it before measuring.")
+                            with { MissingGasCalibration = true };
+                    }
+                    // nRF + SGX without its own calibration: use the SGX fallback gain, never the Winsen generic profile.
+                    calibration = NrfSgxFallbackGasCalibration;
+                    usedGenericGasCalibration = false;
+                    usedSgxFallbackCalibration = true;
                 }
                 if (TryFitGasPpm(coRaw, samplePeriodSec, calibration, out double gasPpm, out double fitDuration))
                 {
@@ -445,6 +459,7 @@ public sealed class XHaleEngine : IXHaleEngine
         return new XHBreathResult(estimatedPpm, duration, shortDuration, smallTempRise)
         {
             UsedGenericGasCalibration = usedGenericGasCalibration,
+            UsedSgxFallbackCalibration = usedSgxFallbackCalibration,
             SensorProfile = XHSensorProfiles.Tag(sensorProfile),
             SensorProfileSource = profileResolution.Source,
         };
@@ -590,7 +605,8 @@ public sealed class XHaleEngine : IXHaleEngine
             throw new InvalidOperationException("EFR + SGX CO prediction is not enabled yet in this SDK version.");
         }
         bool isLegacyWinsen = XHSensorProfiles.AllowsLegacyHumanBreathBranch(sensorProfile);
-        if (!isLegacyWinsen && !HasDeviceSpecificGasCalibration(deviceSerial: null))
+        bool useSgxFallback = !isLegacyWinsen && !HasDeviceSpecificGasCalibration(deviceSerial: null);
+        if (useSgxFallback && !XHSensorProfiles.AllowsSgxFallbackCalibration(sensorProfile))
         {
             throw new InvalidOperationException($"{XHSensorProfiles.DisplayName(sensorProfile)} device has no calibration (firmware, injected, or bundled).");
         }
@@ -605,6 +621,10 @@ public sealed class XHaleEngine : IXHaleEngine
         bool useBreathCalibration = isLegacyWinsen && deltaT > BreathCalibrationTempThresholdC;
         if (!useBreathCalibration)
         {
+            if (useSgxFallback)
+            {
+                return Math.Max(0.0, deltaR / NrfSgxFallbackGasCalibration.GainRawPerPpm);
+            }
             if (!TryGetGasCalibrationForDevice(deviceSerial: null, out var calibration))
             {
                 return 0.0;

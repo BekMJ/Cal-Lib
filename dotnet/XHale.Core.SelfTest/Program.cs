@@ -38,19 +38,27 @@ var e2 = New("D0F18121", null);
 var r2 = e2.AnalyzeBreath(Make(307.666794, 10).co, tWarm, 1.0);
 Check(r2.SensorProfile == "nrf_sgx" && r2.SensorProfileSource == "known_sgx_serial" && r2.EstimatedPPM == 10.0, $"known serial sgx (got {r2.EstimatedPPM}, {r2.SensorProfileSource})");
 
-// 3. 0DC44112: SGX without bundled gain -> blocked; injected -> works
+// 3. 0DC44112: SGX without bundled gain -> nRF-SGX fallback gain; injected -> its own gain
 var e3 = New("0DC44112", null);
 var r3 = e3.AnalyzeBreath(co, tFlat, 1.0);
-Check(r3.PredictionBlocked && r3.MissingGasCalibration && r3.EstimatedPPM == 0, "uncalibrated sgx blocked");
+Check(!r3.PredictionBlocked && r3.UsedSgxFallbackCalibration && !r3.UsedGenericGasCalibration && r3.EstimatedPPM == 10.0, $"uncalibrated nrf-sgx uses sgx fallback (got {r3.EstimatedPPM})");
 e3.SetPerDeviceGasCalibration("0DC44112", 0, 327.436077, 1, 0);
-Check(!e3.AnalyzeBreath(co, tFlat, 1.0).PredictionBlocked, "injected sgx calibration unblocks");
+var r3i = e3.AnalyzeBreath(co, tFlat, 1.0);
+Check(!r3i.PredictionBlocked && !r3i.UsedSgxFallbackCalibration, "injected sgx calibration replaces fallback");
 // firmware calibration also unblocks
 var e3b = New("0DC44112", null); e3b.SetFirmwareGasCalibration(new XHDeviceGasCalibration(0, 327.436077, 1, 0));
 Check(e3b.AnalyzeBreath(co, tFlat, 1.0).EstimatedPPM == 10.0, "firmware sgx calibration unblocks");
 
-// 4. Unknown serial reporting nRF-SGX: never Winsen generic fallback
+// 4. Unknown serial reporting nRF-SGX: SGX fallback, never Winsen generic fallback
 var r4 = New("ABCDEF01", "XHale-NRF-SGX").AnalyzeBreath(co, tFlat, 1.0);
-Check(r4.PredictionBlocked && !r4.UsedGenericGasCalibration, "sgx never uses generic winsen fallback");
+Check(!r4.PredictionBlocked && r4.UsedSgxFallbackCalibration && !r4.UsedGenericGasCalibration, "sgx never uses generic winsen fallback");
+// Fallback = gain 317.55, drift 0, tau 1, dead 0: identical to injecting those constants by hand
+Check(Math.Abs(XHSensorProfiles.NrfSgxFallbackGainRawPerPpm - 317.5514355) < 1e-6, "sgx fallback gain is mean of app-matched gains");
+var co20 = Make(300.0, 20).co;
+var r4b = New("ABCDEF01", "XHale-NRF-SGX").AnalyzeBreath(co20, tFlat, 1.0);
+var e4c = New("ABCDEF01", "XHale-NRF-SGX"); e4c.SetPerDeviceGasCalibration("ABCDEF01", 0, 317.5514355, 1, 0);
+var r4c = e4c.AnalyzeBreath(co20, tFlat, 1.0);
+Check(r4b.UsedSgxFallbackCalibration && r4b.EstimatedPPM == r4c.EstimatedPPM && r4b.EstimatedPPM > 17, $"sgx fallback gain applied (got {r4b.EstimatedPPM} vs {r4c.EstimatedPPM})");
 
 // 5. EFR + SGX recognized but blocked
 var r5 = New("A793BAFC", "XHale-EFR-SGX").AnalyzeBreath(co, tFlat, 1.0);
@@ -80,8 +88,11 @@ var e9 = New("A793BAFC", "XHale-NRF-SGX"); e9.SetBaseline(30000, 22.0);
 double p9 = e9.DecodeCoPpmFromBytes(Be(30000 + 3274), Temp(30.0));
 Check(Math.Abs(p9 - 3274 / 327.436077) < 1e-9, $"sgx single-sample uses gain (got {p9})");
 var e9b = New("12345678", "XHale-NRF-SGX"); e9b.SetBaseline(30000, 22.0);
-bool threw = false; try { e9b.DecodeCoPpmFromBytes(Be(31000), Temp(22.0)); } catch (InvalidOperationException) { threw = true; }
-Check(threw, "uncalibrated sgx single-sample throws");
+double p9b = e9b.DecodeCoPpmFromBytes(Be(31000), Temp(22.0));
+Check(Math.Abs(p9b - 1000 / 317.5514355) < 1e-6, $"uncalibrated nrf-sgx single-sample uses sgx fallback (got {p9b})");
+var e9d = New("12345678", "XHale-EFR-SGX"); e9d.SetBaseline(30000, 22.0);
+bool threw = false; try { e9d.DecodeCoPpmFromBytes(Be(31000), Temp(22.0)); } catch (InvalidOperationException) { threw = true; }
+Check(threw, "efr-sgx single-sample still throws");
 var e9c = New("12345678", null); e9c.SetBaseline(30000, 22.0);
 Check(e9c.DecodeCoPpmFromBytes(Be(31000), Temp(30.0)) == Math.Max(0, ((1000 - 17.30 * 8.0) - 63.20735653235655) / 11.558260683760434), "winsen single-sample unchanged");
 
@@ -109,16 +120,16 @@ e13.SetDeviceIdentity("AAAAAAAA", "XHale-NRF-SGX"); e13.SetFirmwareGasCalibratio
 Check(e13.AnalyzeBreath(co, tFlat, 1.0).EstimatedPPM == 10.0, "device A uses its firmware calibration");
 e13.ClearDeviceIdentity(); e13.SetDeviceIdentity("BBBBBBBB", "XHale-NRF-SGX");
 var r13 = e13.AnalyzeBreath(co, tFlat, 1.0);
-Check(r13.PredictionBlocked && r13.MissingGasCalibration && r13.EstimatedPPM == 0, "clear + new identity drops A's firmware calibration");
+Check(r13.UsedSgxFallbackCalibration, "clear + new identity drops A's firmware calibration (B uses sgx fallback)");
 // Switching identity directly (no Clear) also drops it
 var e13b = new XHaleEngine(); e13b.Initialize("k");
 e13b.SetDeviceIdentity("AAAAAAAA", "XHale-NRF-SGX"); e13b.SetFirmwareGasCalibration(fwCal);
 e13b.SetDeviceIdentity("BBBBBBBB", "XHale-NRF-SGX");
-Check(e13b.AnalyzeBreath(co, tFlat, 1.0).PredictionBlocked, "direct identity switch drops firmware calibration");
+Check(e13b.AnalyzeBreath(co, tFlat, 1.0).UsedSgxFallbackCalibration, "direct identity switch drops firmware calibration");
 // Serial-only API path
 var e13c = New("AAAAAAAA", "XHale-NRF-SGX"); e13c.SetFirmwareGasCalibration(fwCal);
 e13c.SetDeviceSerial("BBBBBBBB"); e13c.SetModelNumber("XHale-NRF-SGX");
-Check(e13c.AnalyzeBreath(co, tFlat, 1.0).PredictionBlocked, "serial switch drops firmware calibration");
+Check(e13c.AnalyzeBreath(co, tFlat, 1.0).UsedSgxFallbackCalibration, "serial switch drops firmware calibration");
 // Same device re-identified keeps it; calibration read before identity belongs to the incoming device
 var e13d = new XHaleEngine(); e13d.Initialize("k");
 e13d.SetFirmwareGasCalibration(fwCal); e13d.SetDeviceIdentity("CCCCCCCC", "XHale-NRF-SGX");
