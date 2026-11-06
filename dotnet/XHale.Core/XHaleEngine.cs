@@ -99,9 +99,10 @@ public sealed class XHaleEngine : IXHaleEngine
         ["F685F16F"] = new DeviceGasCalibration(-6.000243481850735, 75.70296570995819, 12.0, 7.7959056072879145),
         ["F7CF3358"] = new DeviceGasCalibration(-2.887169760194338, 18.93036200071086, 1.0, 0.0),
         // nRF + SGX prototypes (gain-only fit; algorithm settings drift 0, tau 1 s, dead 0).
-        // 0DC44112 is also an SGX prototype but has no bundled gain: it needs firmware or injected constants.
         ["A793BAFC"] = new DeviceGasCalibration(0.0, 327.436077, 1.0, 0.0),
         ["D0F18121"] = new DeviceGasCalibration(0.0, 307.666794, 1.0, 0.0),
+        // 0DC44112: 26 Oct 2026 0/5/10 ppm calibration converted to the same app-matched form (drift 0, tau 1, dead 0).
+        ["0DC44112"] = new DeviceGasCalibration(0.0, 335.86, 1.0, 0.0),
     };
     private double? _baselineExplicitCoRaw;
     private double? _baselineExplicitTempC;
