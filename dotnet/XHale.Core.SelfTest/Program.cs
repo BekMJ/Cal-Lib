@@ -20,34 +20,39 @@ XHaleEngine New(string? serial, string? model, bool setModel = true)
     var e = new XHaleEngine(); e.Initialize("k"); e.SetDeviceSerial(serial); if (setModel) e.SetModelNumber(model); return e;
 }
 var (co, tFlat, tWarm) = Make(327.436077, 10);
+// SGX readings are continuous (no 0/5/10/15 bucketing); synthetic 10 ppm reads close to 10.
+static bool Near10(double ppm) => Math.Abs(ppm - 10.0) < 0.6;
 
 // 1. nRF-SGX by Model Number, bundled gain, warm breath: gas path, not human formula
 var e1 = New("A793BAFC11112222", "XHale-NRF-SGX");
 var rWarm = e1.AnalyzeBreath(co, tWarm, 1.0);
 var rFlat = e1.AnalyzeBreath(co, tFlat, 1.0);
 Check(!rWarm.PredictionBlocked && rWarm.SensorProfile == "nrf_sgx" && rWarm.SensorProfileSource == "model_number", "sgx model profile");
-Check(rWarm.EstimatedPPM == 10.0, $"sgx warm reads 10 (got {rWarm.EstimatedPPM})");
+Check(Near10(rWarm.EstimatedPPM) && rWarm.EstimatedPPM != 10.0, $"sgx warm reads ~10, not bucketed (got {rWarm.EstimatedPPM})");
 Check(rWarm.EstimatedPPM == rFlat.EstimatedPPM, "sgx ppm independent of temperature rise");
 // Same data on a Winsen device with the same constants injected takes the human branch when warm
 var w = New("12345678", null); w.SetPerDeviceGasCalibration("12345678", 0, 327.436077, 1, 0);
 var rw = w.AnalyzeBreath(co, tWarm, 1.0);
 Check(rw.SensorProfile == "nrf_me3" && rw.EstimatedPPM != 10.0, $"winsen warm uses human formula (got {rw.EstimatedPPM})");
+// Winsen gas path still rounds to the 0/5/10/15 buckets; SGX with the same constants does not
+var rwFlat = w.AnalyzeBreath(co, tFlat, 1.0);
+Check(rwFlat.EstimatedPPM == 10.0 && rFlat.EstimatedPPM != 10.0, $"winsen gas bucketed, sgx continuous (winsen {rwFlat.EstimatedPPM}, sgx {rFlat.EstimatedPPM})");
 
 // 2. Known SGX prototype without Model Number
 var e2 = New("D0F18121", null);
 var r2 = e2.AnalyzeBreath(Make(307.666794, 10).co, tWarm, 1.0);
-Check(r2.SensorProfile == "nrf_sgx" && r2.SensorProfileSource == "known_sgx_serial" && r2.EstimatedPPM == 10.0, $"known serial sgx (got {r2.EstimatedPPM}, {r2.SensorProfileSource})");
+Check(r2.SensorProfile == "nrf_sgx" && r2.SensorProfileSource == "known_sgx_serial" && Near10(r2.EstimatedPPM), $"known serial sgx (got {r2.EstimatedPPM}, {r2.SensorProfileSource})");
 
 // 3. 0DC44112: SGX without bundled gain -> nRF-SGX fallback gain; injected -> its own gain
 var e3 = New("0DC44112", null);
 var r3 = e3.AnalyzeBreath(co, tFlat, 1.0);
-Check(!r3.PredictionBlocked && r3.UsedSgxFallbackCalibration && !r3.UsedGenericGasCalibration && r3.EstimatedPPM == 10.0, $"uncalibrated nrf-sgx uses sgx fallback (got {r3.EstimatedPPM})");
+Check(!r3.PredictionBlocked && r3.UsedSgxFallbackCalibration && !r3.UsedGenericGasCalibration && Near10(r3.EstimatedPPM), $"uncalibrated nrf-sgx uses sgx fallback (got {r3.EstimatedPPM})");
 e3.SetPerDeviceGasCalibration("0DC44112", 0, 327.436077, 1, 0);
 var r3i = e3.AnalyzeBreath(co, tFlat, 1.0);
 Check(!r3i.PredictionBlocked && !r3i.UsedSgxFallbackCalibration, "injected sgx calibration replaces fallback");
 // firmware calibration also unblocks
 var e3b = New("0DC44112", null); e3b.SetFirmwareGasCalibration(new XHDeviceGasCalibration(0, 327.436077, 1, 0));
-Check(e3b.AnalyzeBreath(co, tFlat, 1.0).EstimatedPPM == 10.0, "firmware sgx calibration unblocks");
+Check(Near10(e3b.AnalyzeBreath(co, tFlat, 1.0).EstimatedPPM), "firmware sgx calibration unblocks");
 
 // 4. Unknown serial reporting nRF-SGX: SGX fallback, never Winsen generic fallback
 var r4 = New("ABCDEF01", "XHale-NRF-SGX").AnalyzeBreath(co, tFlat, 1.0);
@@ -130,7 +135,7 @@ Check(!r6.ShortDuration && !r6.SmallTemperatureRise, "blocked result quality fla
 var fwCal = new XHDeviceGasCalibration(0, 327.436077, 1, 0);
 var e13 = new XHaleEngine(); e13.Initialize("k");
 e13.SetDeviceIdentity("AAAAAAAA", "XHale-NRF-SGX"); e13.SetFirmwareGasCalibration(fwCal);
-Check(e13.AnalyzeBreath(co, tFlat, 1.0).EstimatedPPM == 10.0, "device A uses its firmware calibration");
+Check(Near10(e13.AnalyzeBreath(co, tFlat, 1.0).EstimatedPPM), "device A uses its firmware calibration");
 e13.ClearDeviceIdentity(); e13.SetDeviceIdentity("BBBBBBBB", "XHale-NRF-SGX");
 var r13 = e13.AnalyzeBreath(co, tFlat, 1.0);
 Check(r13.UsedSgxFallbackCalibration, "clear + new identity drops A's firmware calibration (B uses sgx fallback)");
@@ -146,9 +151,9 @@ Check(e13c.AnalyzeBreath(co, tFlat, 1.0).UsedSgxFallbackCalibration, "serial swi
 // Same device re-identified keeps it; calibration read before identity belongs to the incoming device
 var e13d = new XHaleEngine(); e13d.Initialize("k");
 e13d.SetFirmwareGasCalibration(fwCal); e13d.SetDeviceIdentity("CCCCCCCC", "XHale-NRF-SGX");
-Check(e13d.AnalyzeBreath(co, tFlat, 1.0).EstimatedPPM == 10.0, "calibration before identity is kept");
+Check(Near10(e13d.AnalyzeBreath(co, tFlat, 1.0).EstimatedPPM), "calibration before identity is kept");
 e13d.SetDeviceIdentity("CCCCCCCC", "XHale-NRF-SGX");
-Check(e13d.AnalyzeBreath(co, tFlat, 1.0).EstimatedPPM == 10.0, "same identity keeps calibration");
+Check(Near10(e13d.AnalyzeBreath(co, tFlat, 1.0).EstimatedPPM), "same identity keeps calibration");
 
 // 14. Model Number lookup failed is NOT "absent"
 var e14 = new XHaleEngine(); e14.Initialize("k");
@@ -187,7 +192,7 @@ var r15legacy = New("12345678", null).AnalyzeBreath(coS, tS, 1.0);
 Check(r15legacy.EstimatedPPM != r15.EstimatedPPM, $"legacy warmup-window mode differs on a sample-only array (legacy {r15legacy.EstimatedPPM})");
 // SGX gas path is unaffected by the baseline mode (the fit anchors on the first two samples)
 var e15s = New("A793BAFC11112222", "XHale-NRF-SGX"); e15s.SetBaseline(30000, 22.0);
-Check(e15s.AnalyzeBreath(co, tWarm, 1.0).EstimatedPPM == 10.0, "sample-only sgx gas fit unchanged");
+Check(e15s.AnalyzeBreath(co, tWarm, 1.0).EstimatedPPM == rWarm.EstimatedPPM, "sample-only sgx gas fit unchanged");
 
 // 16. FeedSample keeps sub-second timestamps (100 ms spacing -> 0.1 s period, same as the array API)
 var e16 = New("12345678", null); var e16a = New("12345678", null);

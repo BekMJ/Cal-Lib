@@ -491,7 +491,8 @@ public sealed class XHaleEngine : IXHaleEngine
                 if (TryFitGasPpm(coRaw, samplePeriodSec, calibration, out double gasPpm, out double fitDuration))
                 {
                     if (!sampleOnly) duration = fitDuration;
-                    estimatedPpm = QuantizeGasPpm(Math.Max(0, gasPpm));
+                    // The 0/5/10/15 ppm bucketing is Winsen-only; SGX reports the continuous gas-fit ppm.
+                    estimatedPpm = isLegacyWinsen ? QuantizeGasPpm(Math.Max(0, gasPpm)) : Math.Max(0, gasPpm);
                 }
                 else if (!XHSensorProfiles.AllowsWinsenFallbackConstants(sensorProfile))
                 {
