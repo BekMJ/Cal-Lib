@@ -166,7 +166,7 @@ Calibration‑gas path (ΔT ≤ 2 °C):
 7. ppm conversion:
    - calibrated path: ppm = A / G
    - unknown / unset serials without calibration: ppm is computed with the median generic profile and `UsedGenericGasCalibration` is true.
-8. Gas output quantization:
+8. Gas output quantization (nRF + Winsen ME3 only; SGX profiles return the continuous ppm):
    - `2.0...7.0 → 5`
    - `8.0...12.0 → 10`
    - `13.0...17.0 → 15`
