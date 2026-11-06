@@ -43,10 +43,12 @@ var e2 = New("D0F18121", null);
 var r2 = e2.AnalyzeBreath(Make(307.666794, 10).co, tWarm, 1.0);
 Check(r2.SensorProfile == "nrf_sgx" && r2.SensorProfileSource == "known_sgx_serial" && Near10(r2.EstimatedPPM), $"known serial sgx (got {r2.EstimatedPPM}, {r2.SensorProfileSource})");
 
-// 3. 0DC44112: SGX without bundled gain -> nRF-SGX fallback gain; injected -> its own gain
+// 3. 0DC44112: bundled gain 335.86 (not the fallback); injected -> its own gain
 var e3 = New("0DC44112", null);
 var r3 = e3.AnalyzeBreath(co, tFlat, 1.0);
-Check(!r3.PredictionBlocked && r3.UsedSgxFallbackCalibration && !r3.UsedGenericGasCalibration && Near10(r3.EstimatedPPM), $"uncalibrated nrf-sgx uses sgx fallback (got {r3.EstimatedPPM})");
+var e3ref = New("0DC44112", null); e3ref.SetPerDeviceGasCalibration("0DC44112", 0, 335.86, 1, 0);
+Check(!r3.PredictionBlocked && !r3.UsedSgxFallbackCalibration && !r3.UsedGenericGasCalibration && r3.EstimatedPPM == e3ref.AnalyzeBreath(co, tFlat, 1.0).EstimatedPPM,
+    $"0DC44112 uses its bundled gain (got {r3.EstimatedPPM})");
 e3.SetPerDeviceGasCalibration("0DC44112", 0, 327.436077, 1, 0);
 var r3i = e3.AnalyzeBreath(co, tFlat, 1.0);
 Check(!r3i.PredictionBlocked && !r3i.UsedSgxFallbackCalibration, "injected sgx calibration replaces fallback");
