@@ -1,5 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <!-- Dependency-free self-test for sensor profile behavior. Run: dotnet run --project dotnet/XHale.Core.SelfTest -->
+  <!-- Dependency-free self-test for sensor profile behavior. Run: dotnet run (project dir dotnet/XHale.Core.SelfTest) -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0</TargetFramework>

@@ -4,6 +4,8 @@ public sealed record XHBreathResult(double EstimatedPPM, double DurationSec, boo
 {
     public bool MissingGasCalibration { get; init; }
     public bool UsedGenericGasCalibration { get; init; }
+    /// <summary>True when an nRF + SGX device had no device calibration and the SGX fallback gain was used.</summary>
+    public bool UsedSgxFallbackCalibration { get; init; }
     /// <summary>Profile tag used for this analysis: "nrf_me3", "nrf_sgx", "efr_sgx", or "unsupported".</summary>
     public string SensorProfile { get; init; } = "unknown";
     /// <summary>Why that profile was chosen: "model_number", "known_sgx_serial", "legacy_no_model_number" or "unsupported".</summary>

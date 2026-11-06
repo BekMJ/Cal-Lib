@@ -37,9 +37,11 @@ var breath2 = engine.AnalyzeBreath(coRawBigEndian: beBytePairs, temperatureC: te
 // Optional alternative: set serial once and keep existing AnalyzeBreath(...) calls unchanged
 engine.SetDeviceSerial(disSerialString);
 
-// Sensor profile (Winsen vs SGX): pass the DIS Model Number (0x2A24) string, or null if the
-// device has no Model Number characteristic. Call this AFTER SetDeviceSerial(...).
-engine.SetModelNumber(modelNumberStringOrNull);
+// Sensor profile (Winsen vs SGX): pass the serial and the DIS Model Number (0x2A24) string together,
+// or null for the model if the device has no Model Number characteristic.
+engine.SetDeviceIdentity(serial, modelNumberStringOrNull);
+// On disconnect:
+engine.ClearDeviceIdentity();
 
 // New firmware path: read the 32-byte CAL_READ characteristic from service 0x181A,
 // then let the SDK validate CRC/layout and use those constants for gas analysis.
@@ -101,17 +103,28 @@ The SDK supports three device profiles, selected from the BLE Device Information
 | *(none)*, serial A793BAFC / D0F18121 / 0DC44112 | nRF + SGX | Known SGX prototypes built before Model Number support |
 | `XHale-NRF-ME3` | nRF + Winsen ME3 | Same as legacy |
 | `XHale-NRF-SGX` | nRF + SGX | Per-device gas fit at every temperature rise. No Winsen human-breath formula, no Winsen temperature/voltage compensation, never the Winsen generic fallback |
-| `XHale-EFR-SGX` | EFR + SGX | Recognized; prediction disabled in this version (`XHSensorProfiles.EfrSgxPredictionEnabled`) |
+| `XHale-EFR-SGX` | EFR + SGX | Same CO format and gas fit as nRF + SGX; its own firmware CAL_READ or injected calibration, else the EFR-SGX fallback gain |
 | anything else | unsupported | No prediction |
 
 Host app responsibilities:
 
-1. Read 0x2A24 after service discovery. If the characteristic does not exist, pass `null`.
-2. Call `SetDeviceSerial(...)` first, then `SetModelNumber(...)`. Changing the serial clears the stored Model Number.
-3. Check `XHBreathResult.PredictionBlocked`. When it is `true`, `EstimatedPPM` is 0 and **must not be shown as a reading**; show `PredictionBlockedReason` instead.
-4. `DecodeCoPpmFromBytes(...)` throws `InvalidOperationException` for unsupported devices, EFR + SGX, and SGX devices without calibration. Call `GetSensorProfile()` first if you need to avoid the exception.
+1. Read 0x2A24 after service discovery. Distinguish three outcomes:
+   - **Characteristic does not exist** (legacy Winsen firmware): pass `null` as the Model Number.
+   - **Read succeeded**: pass the string.
+   - **Discovery or read failed** (BLE error/exception): call `SetDeviceIdentity(serial, null, modelNumberLookupFailed: true)` (or `SetModelNumberLookupFailed()`). Never pass `null` for a failed read: `null` means "no Model Number", which selects Winsen and would process a new SGX device with the Winsen formula. A failed lookup blocks prediction ("reconnect and try again"), except for the known SGX prototype serials.
+2. Prefer `SetDeviceIdentity(serial, modelNumber[, modelNumberLookupFailed])` once both DIS reads are done, and `ClearDeviceIdentity()` on disconnect (it also clears the firmware calibration). The separate `SetDeviceSerial(...)` / `SetModelNumber(...)` calls also work in either order on a fresh connection; switching from one serial to another clears the previous device's Model Number and firmware calibration.
+3. Check `XHBreathResult.PredictionBlocked`. When it is `true`, `EstimatedPPM` is 0 and **must not be shown as a reading**; show `PredictionBlockedReason` instead. Optionally flag readings with `UsedSgxFallbackCalibration = true` as "device not calibrated".
+4. `DecodeCoPpmFromBytes(...)` throws `InvalidOperationException` for unsupported devices. Call `GetSensorProfile()` first if you need to avoid the exception.
 
-SGX devices need device-specific constants: firmware CAL_READ, `SetPerDeviceGasCalibration(...)`, or the bundled table (A793BAFC and D0F18121 are bundled with drift 0, tau 1 s, dead 0). Breath results now also report `SensorProfile` (`nrf_me3`, `nrf_sgx`, `efr_sgx`, `unsupported`) and `SensorProfileSource`.
+### Breath input: sample-only (recommended, matches the iOS app)
+
+Wait 20 s after connecting (sensor warmup), call `SetBaseline(...)` / `SetBaselineFromBytes(...)` with the current CO and temperature, then collect **only the breath sample** (e.g. 20 s) and pass those arrays to `AnalyzeBreath(...)`. With a baseline set, `AnalyzeBreath` treats the arrays as the sample only and uses the iOS app's logic exactly: breath start at the first temperature ≥ mean(first 10 temperatures) + 0.8 °C; pre-breath CO = trimmed mean (≥ 5 samples), else mean of the first 2, else the baseline you set; duration = breath start to last sample; the Winsen duration-bucket fallback uses the sample length.
+
+Without a baseline (legacy), the first 20 s of the arrays are treated as warmup, so the arrays must contain warmup + sample. Passing only a breath sample in legacy mode makes the breath-start threshold and CO baseline come from the breath itself.
+
+`FeedSample(...)` timestamps keep millisecond precision, so `AnalyzeBreath()` derives the real sample period for sub-second sampling.
+
+SGX devices should have device-specific constants: firmware CAL_READ, `SetPerDeviceGasCalibration(...)`, or the bundled table (A793BAFC and D0F18121 are bundled with drift 0, tau 1 s, dead 0). An nRF + SGX device without any of these uses the nRF-SGX fallback gain `XHSensorProfiles.NrfSgxFallbackGainRawPerPpm` (317.55 raw/ppm, the mean of those two app-matched gains; drift 0, tau 1 s, dead 0) and reports `UsedSgxFallbackCalibration = true`; it never uses the Winsen generic profile. EFR + SGX uses its firmware CAL_READ or injected (`SetPerDeviceGasCalibration`) constants; without them it uses its own fallback gain `XHSensorProfiles.EfrSgxFallbackGainRawPerPpm` (190.62 raw/ppm, the app-matched 0/10 ppm fit of EFR unit 60A423FF; drift 0, tau 1 s, dead 0) and reports `UsedSgxFallbackCalibration = true`. It never uses the bundled nRF table or the nRF-SGX gain. Breath results now also report `SensorProfile` (`nrf_me3`, `nrf_sgx`, `efr_sgx`, `unsupported`) and `SensorProfileSource`.
 
 ## Calibration (current)
 
@@ -144,7 +157,7 @@ Calibration‑gas path (ΔT ≤ 2 °C):
    - Find first index where slope ≥ 0.1 raw/s and ΔCO ≥ 1.0 raw.
    - If not found, t_start = 0 s.
 6. Exponential fit over 20 s window starting at t_start:
-   - Firmware CAL_READ calibration, if provided through `TrySetFirmwareGasCalibrationRecord(...)`, wins first.
+   - Firmware CAL_READ calibration, if provided through `TrySetFirmwareGasCalibrationRecord(...)`, wins first. It belongs to the device it was read from: `ClearDeviceIdentity()` (call it on disconnect) and switching `SetDeviceIdentity(...)` / `SetDeviceSerial(...)` to a different serial discard it, so a failed CAL_READ on the next device can never reuse the previous device's constants.
    - For known device serial prefixes (first 8 alphanumeric chars, uppercased), the SDK uses injected constants or the bundled per-device table.
    - The host app can inject newer Firestore values with `SetPerDeviceGasCalibration(...)`.
    - Unknown or unset serials with no firmware/injected/table calibration use the SDK's median generic gas profile.
