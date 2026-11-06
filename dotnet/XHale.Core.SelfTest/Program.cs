@@ -60,11 +60,15 @@ var e4c = New("ABCDEF01", "XHale-NRF-SGX"); e4c.SetPerDeviceGasCalibration("ABCD
 var r4c = e4c.AnalyzeBreath(co20, tFlat, 1.0);
 Check(r4b.UsedSgxFallbackCalibration && r4b.EstimatedPPM == r4c.EstimatedPPM && r4b.EstimatedPPM > 17, $"sgx fallback gain applied (got {r4b.EstimatedPPM} vs {r4c.EstimatedPPM})");
 
-// 5. EFR + SGX: firmware/injected calibration only, no fallback, never the bundled nRF table
+// 5. EFR + SGX: firmware/injected calibration, else the EFR fallback gain; never the bundled nRF table or nRF gain
+Check(Math.Abs(XHSensorProfiles.EfrSgxFallbackGainRawPerPpm - 190.6177199) < 1e-6, "efr fallback gain value");
 var r5 = New("12345678", "XHale-EFR-SGX").AnalyzeBreath(co20, tFlat, 1.0);
-Check(r5.PredictionBlocked && r5.MissingGasCalibration && !r5.UsedSgxFallbackCalibration && r5.SensorProfile == "efr_sgx", "uncalibrated efr blocked, no fallback");
+var e5x = New("12345678", "XHale-EFR-SGX"); e5x.SetPerDeviceGasCalibration("12345678", 0, 190.6177199102797, 1, 0);
+var r5x = e5x.AnalyzeBreath(co20, tFlat, 1.0);
+Check(!r5.PredictionBlocked && r5.UsedSgxFallbackCalibration && r5.SensorProfile == "efr_sgx" && r5.EstimatedPPM == r5x.EstimatedPPM && r5.EstimatedPPM != r4b.EstimatedPPM,
+    $"uncalibrated efr uses efr fallback gain, not nrf (got {r5.EstimatedPPM} vs {r5x.EstimatedPPM}, nrf {r4b.EstimatedPPM})");
 var r5t = New("A793BAFC", "XHale-EFR-SGX").AnalyzeBreath(co20, tFlat, 1.0);
-Check(r5t.PredictionBlocked && r5t.MissingGasCalibration, "efr does not use bundled nRF table");
+Check(r5t.UsedSgxFallbackCalibration && r5t.EstimatedPPM == r5.EstimatedPPM, "efr does not use bundled nRF table");
 var e5f = New("12345678", "XHale-EFR-SGX"); e5f.SetFirmwareGasCalibration(new XHDeviceGasCalibration(0, 317.5514355, 1, 0));
 var r5f = e5f.AnalyzeBreath(co20, tFlat, 1.0);
 Check(!r5f.PredictionBlocked && !r5f.UsedSgxFallbackCalibration && r5f.EstimatedPPM == r4c.EstimatedPPM, $"efr uses firmware calibration (got {r5f.EstimatedPPM} vs {r4c.EstimatedPPM})");
@@ -98,8 +102,8 @@ var e9b = New("12345678", "XHale-NRF-SGX"); e9b.SetBaseline(30000, 22.0);
 double p9b = e9b.DecodeCoPpmFromBytes(Be(31000), Temp(22.0));
 Check(Math.Abs(p9b - 1000 / 317.5514355) < 1e-6, $"uncalibrated nrf-sgx single-sample uses sgx fallback (got {p9b})");
 var e9d = New("12345678", "XHale-EFR-SGX"); e9d.SetBaseline(30000, 22.0);
-bool threw = false; try { e9d.DecodeCoPpmFromBytes(Be(31000), Temp(22.0)); } catch (InvalidOperationException) { threw = true; }
-Check(threw, "uncalibrated efr-sgx single-sample throws");
+double p9d = e9d.DecodeCoPpmFromBytes(Be(31000), Temp(22.0));
+Check(Math.Abs(p9d - 1000 / 190.6177199102797) < 1e-9, $"uncalibrated efr-sgx single-sample uses efr fallback (got {p9d})");
 var e9e = New("12345678", "XHale-EFR-SGX"); e9e.SetFirmwareGasCalibration(new XHDeviceGasCalibration(0, 300.0, 1, 0)); e9e.SetBaseline(30000, 22.0);
 Check(Math.Abs(e9e.DecodeCoPpmFromBytes(Be(30600), Temp(22.0)) - 2.0) < 1e-9, "efr-sgx single-sample uses firmware gain");
 var e9c = New("12345678", null); e9c.SetBaseline(30000, 22.0);

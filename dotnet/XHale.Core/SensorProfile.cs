@@ -20,8 +20,8 @@ public enum XHSensorProfile
     NrfMe3,
     /// <summary>nRF + SGX. Per-device gas fit at every temperature rise; no Winsen human-breath formula or fallback constants.</summary>
     NrfSgx,
-    /// <summary>EFR + SGX. Same raw CO format and gas fit as nRF + SGX, but only with its own calibration
-    /// (firmware CAL_READ or injected); it never uses the nRF-SGX fallback gain or the bundled nRF table.</summary>
+    /// <summary>EFR + SGX. Same raw CO format and gas fit as nRF + SGX. Uses its own calibration (firmware CAL_READ
+    /// or injected), else the EFR-SGX fallback gain; never the nRF-SGX gain or the bundled nRF table.</summary>
     EfrSgx,
 }
 
@@ -55,8 +55,8 @@ public static class XHSensorProfiles
 
     /// <summary>
     /// EFR + SGX produces ppm. Its firmware streams CO in the same format as nRF + SGX and stores its own
-    /// calibration in the same CAL_READ record. It has no fallback: without firmware or injected constants
-    /// the reading is blocked with MissingGasCalibration.
+    /// calibration in the same CAL_READ record. Without firmware or injected constants
+    /// the EFR-SGX fallback gain (<see cref="EfrSgxFallbackGainRawPerPpm"/>) is used.
     /// </summary>
     public const bool EfrSgxPredictionEnabled = true;
 
@@ -85,8 +85,22 @@ public static class XHSensorProfiles
     /// <summary>The bundled per-serial table holds nRF-board fits; EFR + SGX uses only firmware or injected constants.</summary>
     public static bool AllowsBundledNrfCalibrationTable(XHSensorProfile profile) => profile != XHSensorProfile.EfrSgx;
 
-    /// <summary>nRF + SGX may use the SGX fallback gain when no device calibration exists. EFR + SGX may not.</summary>
-    public static bool AllowsSgxFallbackCalibration(XHSensorProfile profile) => profile == XHSensorProfile.NrfSgx;
+    /// <summary>SGX boards may use their board-specific SGX fallback gain when no device calibration exists.</summary>
+    public static bool AllowsSgxFallbackCalibration(XHSensorProfile profile) => SgxFallbackGainRawPerPpm(profile).HasValue;
+
+    /// <summary>Board-specific SGX fallback gain (raw counts per ppm), or null for Winsen. nRF and EFR values are never swapped.</summary>
+    public static double? SgxFallbackGainRawPerPpm(XHSensorProfile profile) => profile switch
+    {
+        XHSensorProfile.NrfSgx => NrfSgxFallbackGainRawPerPpm,
+        XHSensorProfile.EfrSgx => EfrSgxFallbackGainRawPerPpm,
+        _ => null,
+    };
+
+    /// <summary>
+    /// EFR + SGX fallback gain (raw counts per ppm): app-matched fit of EFR-SGX 60A423FF (0 and 10 ppm, 2026-11-06).
+    /// Used with drift 0, tau 1 s, dead time 0.
+    /// </summary>
+    public const double EfrSgxFallbackGainRawPerPpm = 190.6177199102797;
 
     /// <summary>
     /// nRF + SGX fallback gain (raw counts per ppm): mean of the two app-matched nRF-SGX fits provisioned 2026-10-09

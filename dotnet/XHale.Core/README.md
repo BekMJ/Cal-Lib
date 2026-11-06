@@ -103,7 +103,7 @@ The SDK supports three device profiles, selected from the BLE Device Information
 | *(none)*, serial A793BAFC / D0F18121 / 0DC44112 | nRF + SGX | Known SGX prototypes built before Model Number support |
 | `XHale-NRF-ME3` | nRF + Winsen ME3 | Same as legacy |
 | `XHale-NRF-SGX` | nRF + SGX | Per-device gas fit at every temperature rise. No Winsen human-breath formula, no Winsen temperature/voltage compensation, never the Winsen generic fallback |
-| `XHale-EFR-SGX` | EFR + SGX | Same CO format and gas fit as nRF + SGX; uses only its own firmware CAL_READ or injected calibration (no fallback) |
+| `XHale-EFR-SGX` | EFR + SGX | Same CO format and gas fit as nRF + SGX; its own firmware CAL_READ or injected calibration, else the EFR-SGX fallback gain |
 | anything else | unsupported | No prediction |
 
 Host app responsibilities:
@@ -114,7 +114,7 @@ Host app responsibilities:
    - **Discovery or read failed** (BLE error/exception): call `SetDeviceIdentity(serial, null, modelNumberLookupFailed: true)` (or `SetModelNumberLookupFailed()`). Never pass `null` for a failed read: `null` means "no Model Number", which selects Winsen and would process a new SGX device with the Winsen formula. A failed lookup blocks prediction ("reconnect and try again"), except for the known SGX prototype serials.
 2. Prefer `SetDeviceIdentity(serial, modelNumber[, modelNumberLookupFailed])` once both DIS reads are done, and `ClearDeviceIdentity()` on disconnect (it also clears the firmware calibration). The separate `SetDeviceSerial(...)` / `SetModelNumber(...)` calls also work in either order on a fresh connection; switching from one serial to another clears the previous device's Model Number and firmware calibration.
 3. Check `XHBreathResult.PredictionBlocked`. When it is `true`, `EstimatedPPM` is 0 and **must not be shown as a reading**; show `PredictionBlockedReason` instead. Optionally flag readings with `UsedSgxFallbackCalibration = true` as "device not calibrated".
-4. `DecodeCoPpmFromBytes(...)` throws `InvalidOperationException` for unsupported devices and for EFR + SGX without calibration. Call `GetSensorProfile()` first if you need to avoid the exception.
+4. `DecodeCoPpmFromBytes(...)` throws `InvalidOperationException` for unsupported devices. Call `GetSensorProfile()` first if you need to avoid the exception.
 
 ### Breath input: sample-only (recommended, matches the iOS app)
 
@@ -124,7 +124,7 @@ Without a baseline (legacy), the first 20 s of the arrays are treated as warmup,
 
 `FeedSample(...)` timestamps keep millisecond precision, so `AnalyzeBreath()` derives the real sample period for sub-second sampling.
 
-SGX devices should have device-specific constants: firmware CAL_READ, `SetPerDeviceGasCalibration(...)`, or the bundled table (A793BAFC and D0F18121 are bundled with drift 0, tau 1 s, dead 0). An nRF + SGX device without any of these uses the nRF-SGX fallback gain `XHSensorProfiles.NrfSgxFallbackGainRawPerPpm` (317.55 raw/ppm, the mean of those two app-matched gains; drift 0, tau 1 s, dead 0) and reports `UsedSgxFallbackCalibration = true`; it never uses the Winsen generic profile. EFR + SGX uses only its firmware CAL_READ or injected (`SetPerDeviceGasCalibration`) constants: it never uses the bundled nRF table or a fallback, and without calibration the result is blocked with `MissingGasCalibration = true`. Breath results now also report `SensorProfile` (`nrf_me3`, `nrf_sgx`, `efr_sgx`, `unsupported`) and `SensorProfileSource`.
+SGX devices should have device-specific constants: firmware CAL_READ, `SetPerDeviceGasCalibration(...)`, or the bundled table (A793BAFC and D0F18121 are bundled with drift 0, tau 1 s, dead 0). An nRF + SGX device without any of these uses the nRF-SGX fallback gain `XHSensorProfiles.NrfSgxFallbackGainRawPerPpm` (317.55 raw/ppm, the mean of those two app-matched gains; drift 0, tau 1 s, dead 0) and reports `UsedSgxFallbackCalibration = true`; it never uses the Winsen generic profile. EFR + SGX uses its firmware CAL_READ or injected (`SetPerDeviceGasCalibration`) constants; without them it uses its own fallback gain `XHSensorProfiles.EfrSgxFallbackGainRawPerPpm` (190.62 raw/ppm, the app-matched 0/10 ppm fit of EFR unit 60A423FF; drift 0, tau 1 s, dead 0) and reports `UsedSgxFallbackCalibration = true`. It never uses the bundled nRF table or the nRF-SGX gain. Breath results now also report `SensorProfile` (`nrf_me3`, `nrf_sgx`, `efr_sgx`, `unsupported`) and `SensorProfileSource`.
 
 ## Calibration (current)
 

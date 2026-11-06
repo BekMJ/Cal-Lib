@@ -62,10 +62,10 @@ public sealed class XHaleEngine : IXHaleEngine
         26.115734843177872,
         1.669570638561888,
         5.0);
-    // nRF + SGX fallback when an SGX device has no firmware, injected, or bundled calibration.
-    private static readonly DeviceGasCalibration NrfSgxFallbackGasCalibration = new(
+    // Board-specific SGX fallback when an SGX device has no firmware, injected, or bundled calibration.
+    private static DeviceGasCalibration SgxFallbackGasCalibration(XHSensorProfile profile) => new(
         0.0,
-        XHSensorProfiles.NrfSgxFallbackGainRawPerPpm,
+        XHSensorProfiles.SgxFallbackGainRawPerPpm(profile) ?? XHSensorProfiles.NrfSgxFallbackGainRawPerPpm,
         1.0,
         0.0);
     private static readonly Dictionary<string, DeviceGasCalibration> DefaultDeviceGasCalibrations = new(StringComparer.Ordinal)
@@ -483,8 +483,8 @@ public sealed class XHaleEngine : IXHaleEngine
                             $"{XHSensorProfiles.DisplayName(sensorProfile)} device has no calibration (firmware, injected, or bundled). Calibrate it before measuring.")
                             with { MissingGasCalibration = true };
                     }
-                    // nRF + SGX without its own calibration: use the SGX fallback gain, never the Winsen generic profile.
-                    calibration = NrfSgxFallbackGasCalibration;
+                    // SGX without its own calibration: use that board's SGX fallback gain, never the Winsen generic profile.
+                    calibration = SgxFallbackGasCalibration(sensorProfile);
                     usedGenericGasCalibration = false;
                     usedSgxFallbackCalibration = true;
                 }
@@ -688,7 +688,7 @@ public sealed class XHaleEngine : IXHaleEngine
         {
             if (useSgxFallback)
             {
-                return Math.Max(0.0, deltaR / NrfSgxFallbackGasCalibration.GainRawPerPpm);
+                return Math.Max(0.0, deltaR / SgxFallbackGasCalibration(sensorProfile).GainRawPerPpm);
             }
             if (!TryGetGasCalibrationForDevice(deviceSerial: null, allowBundledTable, out var calibration))
             {
