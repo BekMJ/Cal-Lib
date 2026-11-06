@@ -20,7 +20,8 @@ public enum XHSensorProfile
     NrfMe3,
     /// <summary>nRF + SGX. Per-device gas fit at every temperature rise; no Winsen human-breath formula or fallback constants.</summary>
     NrfSgx,
-    /// <summary>EFR + SGX. Recognized, but prediction is disabled until its raw format and per-device calibrations are confirmed.</summary>
+    /// <summary>EFR + SGX. Same raw CO format and gas fit as nRF + SGX, but only with its own calibration
+    /// (firmware CAL_READ or injected); it never uses the nRF-SGX fallback gain or the bundled nRF table.</summary>
     EfrSgx,
 }
 
@@ -53,10 +54,11 @@ public static class XHSensorProfiles
         new HashSet<string>(StringComparer.Ordinal) { "A793BAFC", "D0F18121", "0DC44112" };
 
     /// <summary>
-    /// EFR + SGX is identified but not yet allowed to produce ppm. Enable only after the EFR raw CO
-    /// encoding/scaling is confirmed and EFR devices have their own calibrations (nRF-SGX gains must not be reused).
+    /// EFR + SGX produces ppm. Its firmware streams CO in the same format as nRF + SGX and stores its own
+    /// calibration in the same CAL_READ record. It has no fallback: without firmware or injected constants
+    /// the reading is blocked with MissingGasCalibration.
     /// </summary>
-    public const bool EfrSgxPredictionEnabled = false;
+    public const bool EfrSgxPredictionEnabled = true;
 
     public static string Tag(XHSensorProfile profile) => profile switch
     {
@@ -79,6 +81,9 @@ public static class XHSensorProfiles
 
     /// <summary>Only the legacy Winsen profile may fall back to Winsen generic constants or the legacy free-fit coefficients.</summary>
     public static bool AllowsWinsenFallbackConstants(XHSensorProfile profile) => profile == XHSensorProfile.NrfMe3;
+
+    /// <summary>The bundled per-serial table holds nRF-board fits; EFR + SGX uses only firmware or injected constants.</summary>
+    public static bool AllowsBundledNrfCalibrationTable(XHSensorProfile profile) => profile != XHSensorProfile.EfrSgx;
 
     /// <summary>nRF + SGX may use the SGX fallback gain when no device calibration exists. EFR + SGX may not.</summary>
     public static bool AllowsSgxFallbackCalibration(XHSensorProfile profile) => profile == XHSensorProfile.NrfSgx;

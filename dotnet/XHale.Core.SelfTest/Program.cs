@@ -60,9 +60,16 @@ var e4c = New("ABCDEF01", "XHale-NRF-SGX"); e4c.SetPerDeviceGasCalibration("ABCD
 var r4c = e4c.AnalyzeBreath(co20, tFlat, 1.0);
 Check(r4b.UsedSgxFallbackCalibration && r4b.EstimatedPPM == r4c.EstimatedPPM && r4b.EstimatedPPM > 17, $"sgx fallback gain applied (got {r4b.EstimatedPPM} vs {r4c.EstimatedPPM})");
 
-// 5. EFR + SGX recognized but blocked
-var r5 = New("A793BAFC", "XHale-EFR-SGX").AnalyzeBreath(co, tFlat, 1.0);
-Check(r5.PredictionBlocked && r5.SensorProfile == "efr_sgx", "efr blocked");
+// 5. EFR + SGX: firmware/injected calibration only, no fallback, never the bundled nRF table
+var r5 = New("12345678", "XHale-EFR-SGX").AnalyzeBreath(co20, tFlat, 1.0);
+Check(r5.PredictionBlocked && r5.MissingGasCalibration && !r5.UsedSgxFallbackCalibration && r5.SensorProfile == "efr_sgx", "uncalibrated efr blocked, no fallback");
+var r5t = New("A793BAFC", "XHale-EFR-SGX").AnalyzeBreath(co20, tFlat, 1.0);
+Check(r5t.PredictionBlocked && r5t.MissingGasCalibration, "efr does not use bundled nRF table");
+var e5f = New("12345678", "XHale-EFR-SGX"); e5f.SetFirmwareGasCalibration(new XHDeviceGasCalibration(0, 317.5514355, 1, 0));
+var r5f = e5f.AnalyzeBreath(co20, tFlat, 1.0);
+Check(!r5f.PredictionBlocked && !r5f.UsedSgxFallbackCalibration && r5f.EstimatedPPM == r4c.EstimatedPPM, $"efr uses firmware calibration (got {r5f.EstimatedPPM} vs {r4c.EstimatedPPM})");
+var e5i = New("12345678", "XHale-EFR-SGX"); e5i.SetPerDeviceGasCalibration("12345678", 0, 317.5514355, 1, 0);
+Check(!e5i.AnalyzeBreath(co20, tFlat, 1.0).PredictionBlocked, "efr uses injected calibration");
 Check(New("A793BAFC", "XHale-ESP-SGX").GetSensorProfile().Profile == null, "old ESP name is unsupported");
 
 // 6. Unknown model -> unsupported
@@ -92,7 +99,9 @@ double p9b = e9b.DecodeCoPpmFromBytes(Be(31000), Temp(22.0));
 Check(Math.Abs(p9b - 1000 / 317.5514355) < 1e-6, $"uncalibrated nrf-sgx single-sample uses sgx fallback (got {p9b})");
 var e9d = New("12345678", "XHale-EFR-SGX"); e9d.SetBaseline(30000, 22.0);
 bool threw = false; try { e9d.DecodeCoPpmFromBytes(Be(31000), Temp(22.0)); } catch (InvalidOperationException) { threw = true; }
-Check(threw, "efr-sgx single-sample still throws");
+Check(threw, "uncalibrated efr-sgx single-sample throws");
+var e9e = New("12345678", "XHale-EFR-SGX"); e9e.SetFirmwareGasCalibration(new XHDeviceGasCalibration(0, 300.0, 1, 0)); e9e.SetBaseline(30000, 22.0);
+Check(Math.Abs(e9e.DecodeCoPpmFromBytes(Be(30600), Temp(22.0)) - 2.0) < 1e-9, "efr-sgx single-sample uses firmware gain");
 var e9c = New("12345678", null); e9c.SetBaseline(30000, 22.0);
 Check(e9c.DecodeCoPpmFromBytes(Be(31000), Temp(30.0)) == Math.Max(0, ((1000 - 17.30 * 8.0) - 63.20735653235655) / 11.558260683760434), "winsen single-sample unchanged");
 

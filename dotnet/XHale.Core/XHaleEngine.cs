@@ -470,11 +470,12 @@ public sealed class XHaleEngine : IXHaleEngine
         }
         else
         {
-            if (TryGetGasCalibrationForDevice(deviceSerial, out var calibration))
+            bool allowBundledTable = XHSensorProfiles.AllowsBundledNrfCalibrationTable(sensorProfile);
+            if (TryGetGasCalibrationForDevice(deviceSerial, allowBundledTable, out var calibration))
             {
                 usedGenericGasCalibration = calibration == GenericDeviceGasCalibration;
                 if (!XHSensorProfiles.AllowsWinsenFallbackConstants(sensorProfile)
-                    && !HasDeviceSpecificGasCalibration(deviceSerial))
+                    && !HasDeviceSpecificGasCalibration(deviceSerial, allowBundledTable))
                 {
                     if (!XHSensorProfiles.AllowsSgxFallbackCalibration(sensorProfile))
                     {
@@ -668,7 +669,8 @@ public sealed class XHaleEngine : IXHaleEngine
             throw new InvalidOperationException("EFR + SGX CO prediction is not enabled yet in this SDK version.");
         }
         bool isLegacyWinsen = XHSensorProfiles.AllowsLegacyHumanBreathBranch(sensorProfile);
-        bool useSgxFallback = !isLegacyWinsen && !HasDeviceSpecificGasCalibration(deviceSerial: null);
+        bool allowBundledTable = XHSensorProfiles.AllowsBundledNrfCalibrationTable(sensorProfile);
+        bool useSgxFallback = !isLegacyWinsen && !HasDeviceSpecificGasCalibration(deviceSerial: null, allowBundledTable);
         if (useSgxFallback && !XHSensorProfiles.AllowsSgxFallbackCalibration(sensorProfile))
         {
             throw new InvalidOperationException($"{XHSensorProfiles.DisplayName(sensorProfile)} device has no calibration (firmware, injected, or bundled).");
@@ -688,7 +690,7 @@ public sealed class XHaleEngine : IXHaleEngine
             {
                 return Math.Max(0.0, deltaR / NrfSgxFallbackGasCalibration.GainRawPerPpm);
             }
-            if (!TryGetGasCalibrationForDevice(deviceSerial: null, out var calibration))
+            if (!TryGetGasCalibrationForDevice(deviceSerial: null, allowBundledTable, out var calibration))
             {
                 return 0.0;
             }
@@ -953,7 +955,8 @@ public sealed class XHaleEngine : IXHaleEngine
             || string.Equals(requested, _deviceSerialPrefix, StringComparison.Ordinal);
     }
 
-    private bool TryGetGasCalibrationForDevice(string? deviceSerial, out DeviceGasCalibration calibration)
+    // allowBundledTable is false for EFR + SGX: the bundled table holds nRF-board fits only.
+    private bool TryGetGasCalibrationForDevice(string? deviceSerial, bool allowBundledTable, out DeviceGasCalibration calibration)
     {
         if (FirmwareCalibrationAppliesTo(deviceSerial) && _firmwareDeviceGasCalibration is { } firmwareCalibration)
         {
@@ -967,7 +970,7 @@ public sealed class XHaleEngine : IXHaleEngine
             calibration = injectedCalibration;
             return true;
         }
-        if (serialPrefix != null && DefaultDeviceGasCalibrations.TryGetValue(serialPrefix, out var bundledCalibration))
+        if (allowBundledTable && serialPrefix != null && DefaultDeviceGasCalibrations.TryGetValue(serialPrefix, out var bundledCalibration))
         {
             calibration = bundledCalibration;
             return true;
@@ -977,13 +980,13 @@ public sealed class XHaleEngine : IXHaleEngine
     }
 
     // True when firmware, injected, or bundled per-device constants exist (i.e. not the generic Winsen fallback).
-    private bool HasDeviceSpecificGasCalibration(string? deviceSerial)
+    private bool HasDeviceSpecificGasCalibration(string? deviceSerial, bool allowBundledTable)
     {
         if (FirmwareCalibrationAppliesTo(deviceSerial)) return true;
         string? serialPrefix = NormalizeSerialPrefix(deviceSerial) ?? _deviceSerialPrefix;
         if (serialPrefix == null) return false;
         return _injectedDeviceGasCalibrations.ContainsKey(serialPrefix)
-            || DefaultDeviceGasCalibrations.ContainsKey(serialPrefix);
+            || (allowBundledTable && DefaultDeviceGasCalibrations.ContainsKey(serialPrefix));
     }
 
     private static double ReadSingleLittleEndian(ReadOnlySpan<byte> record, int offset)
