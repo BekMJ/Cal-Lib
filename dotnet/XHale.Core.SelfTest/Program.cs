@@ -20,7 +20,7 @@ XHaleEngine New(string? serial, string? model, bool setModel = true)
     var e = new XHaleEngine(); e.Initialize("k"); e.SetDeviceSerial(serial); if (setModel) e.SetModelNumber(model); return e;
 }
 var (co, tFlat, tWarm) = Make(327.436077, 10);
-// SGX readings are continuous (no 0/5/10/15 bucketing); synthetic 10 ppm reads close to 10.
+// SGX readings use narrow buckets (4-6 -> 5, 9-11 -> 10, 14-16 -> 15); synthetic 10 ppm reads close to 10.
 static bool Near10(double ppm) => Math.Abs(ppm - 10.0) < 0.6;
 
 // 1. nRF-SGX by Model Number, bundled gain, warm breath: gas path, not human formula
@@ -28,15 +28,26 @@ var e1 = New("A793BAFC11112222", "XHale-NRF-SGX");
 var rWarm = e1.AnalyzeBreath(co, tWarm, 1.0);
 var rFlat = e1.AnalyzeBreath(co, tFlat, 1.0);
 Check(!rWarm.PredictionBlocked && rWarm.SensorProfile == "nrf_sgx" && rWarm.SensorProfileSource == "model_number", "sgx model profile");
-Check(Near10(rWarm.EstimatedPPM) && rWarm.EstimatedPPM != 10.0, $"sgx warm reads ~10, not bucketed (got {rWarm.EstimatedPPM})");
+Check(rWarm.EstimatedPPM == 10.0, $"sgx warm reads 10 via narrow bucket (got {rWarm.EstimatedPPM})");
 Check(rWarm.EstimatedPPM == rFlat.EstimatedPPM, "sgx ppm independent of temperature rise");
 // Same data on a Winsen device with the same constants injected takes the human branch when warm
 var w = New("12345678", null); w.SetPerDeviceGasCalibration("12345678", 0, 327.436077, 1, 0);
 var rw = w.AnalyzeBreath(co, tWarm, 1.0);
 Check(rw.SensorProfile == "nrf_me3" && rw.EstimatedPPM != 10.0, $"winsen warm uses human formula (got {rw.EstimatedPPM})");
-// Winsen gas path still rounds to the 0/5/10/15 buckets; SGX with the same constants does not
+// Winsen keeps the wide buckets (2-7, 8-12, 13-17); SGX uses narrow ones (4-6, 9-11, 14-16)
 var rwFlat = w.AnalyzeBreath(co, tFlat, 1.0);
-Check(rwFlat.EstimatedPPM == 10.0 && rFlat.EstimatedPPM != 10.0, $"winsen gas bucketed, sgx continuous (winsen {rwFlat.EstimatedPPM}, sgx {rFlat.EstimatedPPM})");
+Check(rwFlat.EstimatedPPM == 10.0 && rFlat.EstimatedPPM == 10.0, $"10 ppm buckets (winsen {rwFlat.EstimatedPPM}, sgx {rFlat.EstimatedPPM})");
+double Q(double x) => XHaleEngine.QuantizeSgxGasPpm(x);
+Check(Q(4.0) == 5 && Q(5.4) == 5 && Q(6.0) == 5, "sgx 4-6 -> 5");
+Check(Q(9.0) == 10 && Q(10.6) == 10 && Q(11.0) == 10, "sgx 9-11 -> 10");
+Check(Q(14.0) == 15 && Q(15.9) == 15 && Q(16.0) == 15, "sgx 14-16 -> 15");
+Check(Q(3.9) == 3.9 && Q(6.1) == 6.1 && Q(7.3) == 7.3 && Q(8.9) == 8.9 && Q(11.2) == 11.2 && Q(13.5) == 13.5 && Q(16.4) == 16.4 && Q(20.0) == 20.0,
+    "sgx values outside the buckets stay continuous");
+Check(Q(0.0) == 0 && Q(-1.0) == 0 && Q(double.NaN) == 0, "sgx rounding clamps at 0");
+// A 12.0 ppm SGX reading is not rounded (Winsen would round it to 10)
+var e12 = New("12345678", "XHale-NRF-SGX"); e12.SetPerDeviceGasCalibration("12345678", 0, 327.436077 * 10.0 / 12.0, 1, 0);
+double r12 = e12.AnalyzeBreath(co, tFlat, 1.0).EstimatedPPM;
+Check(r12 > 11.0 && r12 < 13.0 && r12 != 10.0, $"sgx 12 ppm stays continuous (got {r12})");
 
 // 2. Known SGX prototype without Model Number
 var e2 = New("D0F18121", null);
