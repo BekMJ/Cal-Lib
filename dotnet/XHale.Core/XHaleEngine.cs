@@ -492,8 +492,8 @@ public sealed class XHaleEngine : IXHaleEngine
                 if (TryFitGasPpm(coRaw, samplePeriodSec, calibration, out double gasPpm, out double fitDuration))
                 {
                     if (!sampleOnly) duration = fitDuration;
-                    // The 0/5/10/15 ppm bucketing is Winsen-only; SGX reports the continuous gas-fit ppm.
-                    estimatedPpm = isLegacyWinsen ? QuantizeGasPpm(Math.Max(0, gasPpm)) : Math.Max(0, gasPpm);
+                    // Winsen: wide 0/5/10/15 buckets. SGX: narrow +/-1 ppm buckets around 5/10/15, else continuous.
+                    estimatedPpm = isLegacyWinsen ? QuantizeGasPpm(Math.Max(0, gasPpm)) : QuantizeSgxGasPpm(Math.Max(0, gasPpm));
                 }
                 else if (!XHSensorProfiles.AllowsWinsenFallbackConstants(sensorProfile))
                 {
@@ -912,6 +912,24 @@ public sealed class XHaleEngine : IXHaleEngine
             }
         }
         return 0;
+    }
+
+    /// <summary>
+    /// SGX gas rounding used by AnalyzeBreath: 4-6 -> 5, 9-11 -> 10, 14-16 -> 15 ppm (inclusive);
+    /// other values are returned unchanged (never below 0).
+    /// </summary>
+    public static double QuantizeSgxGasPpm(double ppm)
+    {
+        if (double.IsNaN(ppm) || double.IsInfinity(ppm))
+        {
+            return 0.0;
+        }
+
+        double clipped = Math.Max(0, ppm);
+        if (clipped >= 4.0 && clipped <= 6.0) return 5.0;
+        if (clipped >= 9.0 && clipped <= 11.0) return 10.0;
+        if (clipped >= 14.0 && clipped <= 16.0) return 15.0;
+        return clipped;
     }
 
     private static double QuantizeGasPpm(double ppm)
